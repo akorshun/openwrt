@@ -70,6 +70,9 @@ jobs:
           CONFIG_ALL=n
           CONFIG_AUTOREMOVE=n
           CONFIG_LOCALMIRROR=""
+          # LuCI web UI (matches official release defaults)
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-ssl=y
           EOF
           make defconfig
           echo "----- Selected target -----"
