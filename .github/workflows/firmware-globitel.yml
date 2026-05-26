@@ -1,0 +1,136 @@
+name: Build Globitel BT-R320
+# Based on OpenWrt v25.12.4 stable tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      verbose:
+        description: "Verbose make (V=s)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  push:
+    branches:
+      - openwrt-25.12-globitel-bt-r320
+    paths:
+      - 'target/linux/mediatek/**'
+      - 'package/boot/uboot-mediatek/**'
+      - '.github/workflows/firmware-globitel.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: mediatek/filogic globitel_bt-r320
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Maximize build space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses-dev libssl-dev python3-setuptools \
+            python3-dev python3 rsync swig unzip zlib1g-dev file wget zstd ccache \
+            ecj fastjar java-propose-classpath libelf-dev libncursesw5-dev \
+            libdw-dev liblz4-dev libzstd-dev libxml-parser-perl
+
+      - name: Update feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure build (Globitel BT-R320 only)
+        run: |
+          rm -f .config
+          cat > .config <<'EOF'
+          CONFIG_TARGET_mediatek=y
+          CONFIG_TARGET_mediatek_filogic=y
+          CONFIG_TARGET_mediatek_filogic_DEVICE_globitel_bt-r320=y
+          CONFIG_ALL_KMODS=n
+          CONFIG_ALL=n
+          CONFIG_AUTOREMOVE=n
+          CONFIG_LOCALMIRROR=""
+          EOF
+          make defconfig
+          echo "----- Selected target -----"
+          grep -E '^CONFIG_TARGET_(mediatek|BOARD|ARCH)' .config | head -20
+          echo "----- Selected device -----"
+          grep -E '^CONFIG_TARGET.*globitel' .config
+
+      - name: Download sources
+        run: make download -j8
+
+      - name: Build tools
+        run: |
+          make tools/install -j$(nproc) \
+            ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
+            make tools/install -j1 V=s
+
+      - name: Build toolchain
+        run: |
+          make toolchain/install -j$(nproc) \
+            ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
+            make toolchain/install -j1 V=s
+
+      - name: Build firmware
+        run: |
+          make -j$(nproc) \
+            ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
+            make -j1 V=s
+
+      - name: List output
+        if: always()
+        run: |
+          echo "----- bin/targets/mediatek/filogic -----"
+          ls -lh bin/targets/mediatek/filogic/ || true
+          echo "----- disk usage -----"
+          df -h
+
+      - name: Collect artifacts
+        if: success()
+        run: |
+          mkdir -p artifacts
+          cp -v bin/targets/mediatek/filogic/*globitel*bt-r320* artifacts/ 2>/dev/null || true
+          cp -v bin/targets/mediatek/filogic/sha256sums artifacts/ 2>/dev/null || true
+          cp -v bin/targets/mediatek/filogic/profiles.json artifacts/ 2>/dev/null || true
+          ls -lh artifacts/
+
+      - name: Upload firmware artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: globitel-bt-r320-firmware-${{ github.sha }}
+          path: artifacts/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.sha }}
+          path: |
+            logs/
+            .config
+          retention-days: 14
+          if-no-files-found: ignore
