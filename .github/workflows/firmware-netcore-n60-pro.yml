@@ -125,6 +125,29 @@ jobs:
           echo "----- disk usage -----"
           df -h
 
+      - name: Report kernel version and vermagic
+        if: always()
+        run: |
+          echo "----- LINUX_VERSION / LINUX_RELEASE -----"
+          make --no-print-directory val.LINUX_VERSION val.LINUX_RELEASE 2>/dev/null || true
+          echo "----- staging .vermagic -----"
+          find staging_dir -name '.vermagic' -print -exec cat {} \; 2>/dev/null || true
+          echo "----- vermagic in built .ko (first match) -----"
+          KO=$(find build_dir -name '*.ko' 2>/dev/null | head -1)
+          if [ -n "$KO" ]; then
+            echo "ko: $KO"
+            strings "$KO" | grep -m1 -E '^vermagic=' || true
+          fi
+          echo "----- vermagic in a packaged kmod -----"
+          KPKG=$(find bin -type f \( -name 'kmod-*.apk' -o -name 'kmod-*.ipk' \) 2>/dev/null | head -1)
+          if [ -n "$KPKG" ]; then
+            echo "pkg: $KPKG"
+            mkdir -p /tmp/kpkg && (cd /tmp/kpkg && tar -xf "$GITHUB_WORKSPACE/$KPKG" 2>/dev/null || true)
+            for ko in $(find /tmp/kpkg -name '*.ko' 2>/dev/null); do
+              strings "$ko" | grep -m1 -E '^vermagic=' && break || true
+            done
+          fi
+
       - name: Collect artifacts
         if: success()
         run: |
@@ -132,7 +155,13 @@ jobs:
           cp -v bin/targets/mediatek/filogic/*netcore*n60-pro* artifacts/ 2>/dev/null || true
           cp -v bin/targets/mediatek/filogic/sha256sums artifacts/ 2>/dev/null || true
           cp -v bin/targets/mediatek/filogic/profiles.json artifacts/ 2>/dev/null || true
-          ls -lh artifacts/
+          # Include built kernel modules so they can be installed on this exact firmware
+          # (guaranteed matching vermagic since they come from the same build).
+          if [ -d bin/targets/mediatek/filogic/packages ]; then
+            mkdir -p artifacts/kmods
+            cp -v bin/targets/mediatek/filogic/packages/kmod-* artifacts/kmods/ 2>/dev/null || true
+          fi
+          ls -lhR artifacts/
 
       - name: Upload firmware artifacts
         if: success()
