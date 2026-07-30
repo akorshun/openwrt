@@ -19,6 +19,7 @@ on:
       - 'target/linux/**'
     branches-ignore:
       - master
+      - snapshot_6.18_cubie_a5e_4gb_v1.204_fix
   workflow_dispatch:
 
 permissions:
