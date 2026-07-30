@@ -439,7 +439,7 @@ $$(call addfield,Depends,$$(Package/$(1)/DEPENDS)
 )$$(call addfield,LicenseFiles,$(LICENSE_FILES)
 )$$(call addfield,Section,$(SECTION)
 )$$(call addfield,Require-User,$(USERID)
-)$$(call addfield,SourceDateEpoch,$(PKG_SOURCE_DATE_EPOCH)
+)$$(call addfield,SourceDateEpoch,$$(PKG_SOURCE_DATE_EPOCH)
 )$$(call addfield,URL,$(URL)
 )$$(if $$(ABIV_$(1)),ABIVersion: $$(ABIV_$(1))
 )$(if $(PKG_CPE_ID),CPE-ID: $(PKG_CPE_ID)
@@ -453,8 +453,7 @@ $(_endef)
     $$(PACK_$(1)) : export CONTROL=$$(Package/$(1)/CONTROL)
     $$(PACK_$(1)) : $(call shexport,Package/$(1)/description)
     $$(PACK_$(1)) : export PATH=$$(TARGET_PATH_PKG)
-    $$(PACK_$(1)) : export PKG_SOURCE_DATE_EPOCH:=$(PKG_SOURCE_DATE_EPOCH)
-    $$(PACK_$(1)) : export SOURCE_DATE_EPOCH:=$(PKG_SOURCE_DATE_EPOCH)
+    $$(PACK_$(1)) : export SOURCE_DATE_EPOCH=$$(PKG_SOURCE_DATE_EPOCH)
     $(PKG_INFO_DIR)/$(1).provides $$(PACK_$(1)): $(STAMP_BUILT) $(INCLUDE_DIR)/package-pack.mk
 	rm -rf $$(IDIR_$(1))
 ifeq ($$(CONFIG_USE_APK),)
@@ -606,7 +605,7 @@ else
 		exit 1; \
 	fi
 
-	$(FAKEROOT) $(STAGING_DIR_HOST)/bin/apk mkpkg \
+	SOURCE_DATE_EPOCH=0 $(FAKEROOT) $(STAGING_DIR_HOST)/bin/apk mkpkg \
 	  --info "name:$(1)$$(ABIV_$(1))" \
 	  --info "version:$(VERSION)" \
 	  $$(if $$(APK_TAGS_$(1)),--info "tags:$$(APK_TAGS_$(1))") \

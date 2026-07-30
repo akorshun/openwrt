@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=linux-firmware
-PKG_VERSION:=20260410
+PKG_VERSION:=20260622
 PKG_RELEASE:=1
 
 PKG_SOURCE_URL:=@KERNEL/linux/kernel/firmware
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
-PKG_HASH:=b7812ed6d59f6b09ecceddaa0be842a7e82a79cc0e46ca60478a4ebf02f1e178
+PKG_HASH:=2b9d8a358e76eb766588609135e53fa548b902c551daae33ee32f26f25e60dbb
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 
@@ -32,6 +32,7 @@ define Package/firmware-default
   DEPENDS:=$(2)
   LICENSE_FILES:=$(3)
   LICENSE:=$(4)
+  $(if $(5),PKGFLAGS:=$(5))
 endef
 
 define Build/Compile

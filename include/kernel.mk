@@ -102,6 +102,7 @@ KERNEL_MAKE = $(MAKE) $(KERNEL_MAKEOPTS)
 
 KERNEL_MAKE_FLAGS = \
 	KCFLAGS="$(call iremap,$(BUILD_DIR),$(notdir $(BUILD_DIR))) $(filter-out -fno-plt,$(call qstrip,$(CONFIG_EXTRA_OPTIMIZATION))) $(call qstrip,$(CONFIG_KERNEL_CFLAGS))" \
+	KAFLAGS="$(call iremap,$(BUILD_DIR),$(notdir $(BUILD_DIR)))" \
 	HOSTCFLAGS="$(HOST_CFLAGS) -Wall -Wmissing-prototypes -Wstrict-prototypes" \
 	CROSS_COMPILE="$(KERNEL_CROSS)" \
 	ARCH="$(LINUX_KARCH)" \
@@ -121,17 +122,16 @@ ifneq (,$(KERNEL_CC))
   KERNEL_MAKE_FLAGS += CC="$(KERNEL_CC)"
 endif
 
+ifeq ($(HOST_OS),Darwin)
+  KERNEL_MAKE_FLAGS += MACOSX_DEPLOYMENT_TARGET="$(shell sw_vers -productVersion)"
+endif
+
 KERNEL_NOSTDINC_FLAGS = \
 	-nostdinc $(if $(DUMP),, -isystem $(shell $(TARGET_CC) -print-file-name=include))
 
 ifeq ($(call qstrip,$(CONFIG_EXTERNAL_KERNEL_TREE))$(call qstrip,$(CONFIG_KERNEL_GIT_CLONE_URI)),)
   KERNEL_MAKE_FLAGS += \
 	KERNELRELEASE=$(LINUX_VERSION)
-endif
-
-ifneq ($(HOST_OS),Linux)
-  KERNEL_MAKE_FLAGS += CONFIG_STACK_VALIDATION=
-  export SKIP_STACK_VALIDATION:=1
 endif
 
 KERNEL_MAKEOPTS = -C $(LINUX_DIR) $(KERNEL_MAKE_FLAGS)

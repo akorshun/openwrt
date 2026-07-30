@@ -36,11 +36,13 @@ platform_do_upgrade() {
 		platform_do_upgrade_dualboot_plasmacloud "$1"
 		;;
 	tplink,sg2008p-v1|\
+	tplink,sg2008p-v3|\
 	tplink,sg2210p-v3)
 		tplink_sg2xxx_fix_mtdparts
 		default_do_upgrade "$1"
 		;;
 	linksys,lgs328c|\
+	linksys,lgs328mpc-v2|\
 	linksys,lgs352c)
 		nand_do_upgrade "$1"
 		;;

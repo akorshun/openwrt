@@ -221,6 +221,18 @@ define Device/cudy_lt400e-v1
 endef
 TARGET_DEVICES += cudy_lt400e-v1
 
+define Device/cudy_lt500-outdoor-v1
+  IMAGE_SIZE := 15872k
+  DEVICE_VENDOR := Cudy
+  DEVICE_MODEL := LT500 Outdoor
+  DEVICE_VARIANT := v1
+  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7663-firmware-ap kmod-usb2 \
+	kmod-usb-ohci kmod-usb-net-cdc-ether kmod-usb-serial-option
+  UIMAGE_NAME := R35
+  SUPPORTED_DEVICES += R35
+endef
+TARGET_DEVICES += cudy_lt500-outdoor-v1
+
 define Device/cudy_m1200-v1
   IMAGE_SIZE := 15872k
   DEVICE_VENDOR := Cudy
@@ -253,6 +265,15 @@ define Device/cudy_tr1200-v1
   SUPPORTED_DEVICES += R46
 endef
 TARGET_DEVICES += cudy_tr1200-v1
+
+define Device/cudy_wr300-v1
+  IMAGE_SIZE := 7808k
+  DEVICE_VENDOR := Cudy
+  DEVICE_MODEL := WR300
+  DEVICE_VARIANT := v1
+  SUPPORTED_DEVICES += cudy,wr300
+endef
+TARGET_DEVICES += cudy_wr300-v1
 
 define Device/cudy_wr1000
   IMAGE_SIZE := 7872k
@@ -1534,3 +1555,14 @@ define Device/teltonika_rut241
   IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | check-size | append-metadata
 endef
 TARGET_DEVICES += teltonika_rut241
+
+define Device/yuncore_1200f
+  IMAGE_SIZE := 7872k
+  DEVICE_VENDOR := Yuncore
+  DEVICE_MODEL := 1200F
+  DEVICE_ALT0_VENDOR := KuWFi
+  DEVICE_ALT0_MODEL := AP1200F
+  SUPPORTED_DEVICES += yuncore,1200f
+  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7663-firmware-ap -kmod-mt76x2 -kmod-mt76x2-common -kmod-mt76x02-common
+endef
+TARGET_DEVICES += yuncore_1200f

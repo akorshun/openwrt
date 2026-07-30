@@ -92,6 +92,8 @@
 #define RTMD_PHY_RTL8224			0x001ccad0
 #define RTMD_PHY_RTL8226			0x001cc838
 #define RTMD_PHY_RTL8261			0x001ccaf3
+#define RTMD_PHY_RTL8264			0x001ccaf2
+#define RTMD_PHY_RTL8264B			0x001cc813
 
 #define RTMD_PHY_MAC_1G				3
 #define RTMD_PHY_MAC_2G_PLUS			1
@@ -737,6 +739,8 @@ static int rtmd_get_phy_info(struct rtmd_ctrl *ctrl, int pn, struct rtmd_phy_inf
 		phyinfo->poll_lpa_1000 = RTMD_PHY_POLL_MMD(31, 0xa414, 11);
 		break;
 	case RTMD_PHY_RTL8261:
+	case RTMD_PHY_RTL8264:
+	case RTMD_PHY_RTL8264B:
 		phyinfo->mac_type = RTMD_PHY_MAC_2G_PLUS;
 		phyinfo->has_giga_lite = true;
 		phyinfo->has_res_reg = true;
@@ -747,6 +751,18 @@ static int rtmd_get_phy_info(struct rtmd_ctrl *ctrl, int pn, struct rtmd_phy_inf
 	}
 
 	return 0;
+}
+
+static struct fwnode_handle *rtmd_get_bus_node(struct fwnode_handle *phynode)
+{
+	struct fwnode_handle *parent = fwnode_get_parent(phynode);
+
+	if (parent && fwnode_name_eq(parent, "ethernet-phy-package")) {
+		struct fwnode_handle *grandparent = fwnode_get_parent(parent);
+		fwnode_handle_put(parent);
+		return grandparent;
+	}
+	return parent;
 }
 
 static int rtmd_838x_setup_ctrl(struct rtmd_ctrl *ctrl)
@@ -964,14 +980,9 @@ static int rtmd_map_ports(struct device *dev)
 	struct rtmd_ctrl *ctrl = dev_get_drvdata(dev);
 	int smi_bus, smi_addr, pn;
 
-	struct fwnode_handle *fw_parent __free(fwnode_handle) = fwnode_get_parent(fw_dev);
-	if (!fw_parent)
-		return -ENODEV;
-
-	struct fwnode_handle *fw_switch __free(fwnode_handle) =
-		fwnode_get_named_child_node(fw_parent, "ethernet-switch");
+	struct fwnode_handle *fw_switch __free(fwnode_handle) = fwnode_get_parent(fw_dev);
 	if (!fw_switch)
-		return dev_err_probe(dev, -ENODEV, "%pfwP missing ethernet-switch\n", fw_parent);
+		return -ENODEV;
 
 	struct fwnode_handle *fw_ports __free(fwnode_handle) =
 		fwnode_get_named_child_node(fw_switch, "ethernet-ports");
@@ -1007,7 +1018,7 @@ static int rtmd_map_ports(struct device *dev)
 		if (smi_addr >= PHY_MAX_ADDR)
 			return dev_err_probe(dev, -EINVAL, "%pfwP illegal phy address\n", fw_phy);
 
-		struct fwnode_handle *fw_bus __free(fwnode_handle) = fwnode_get_parent(fw_phy);
+		struct fwnode_handle *fw_bus __free(fwnode_handle) = rtmd_get_bus_node(fw_phy);
 		if (!fw_bus || fwnode_property_read_u32(fw_bus, "reg", &smi_bus))
 			return dev_err_probe(dev, -EINVAL, "%pfwP no bus number\n",
 					     fw_bus ?: fw_phy);

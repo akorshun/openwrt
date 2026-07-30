@@ -182,6 +182,7 @@ platform_do_upgrade() {
 	cmcc,mr3000d-ci|\
 	cmcc,pz-l8|\
 	elecom,wrc-x3000gs2|\
+	elecom,wrc-x3000gst2|\
 	iodata,wn-dax3000gr)
 		local delay
 
@@ -228,6 +229,7 @@ platform_do_upgrade() {
 		# Kernel and rootfs are placed in 2 different UBI
 		CI_KERN_UBIPART="ubi_kernel"
 		CI_ROOT_UBIPART="rootfs"
+		CI_DATA_UBIPART="rootfs"
 		nand_do_upgrade "$1"
 		;;
 	yuncore,ax830|\

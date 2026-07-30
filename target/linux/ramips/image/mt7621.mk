@@ -458,6 +458,16 @@ define Device/asus_rt-ac85p
 endef
 TARGET_DEVICES += asus_rt-ac85p
 
+define Device/asus_rt-ac85u
+  $(Device/nand)
+  DEVICE_VENDOR := ASUS
+  DEVICE_MODEL := RT-AC85U
+  DEVICE_DTS := mt7621_asus_rt-ac85u
+  IMAGE_SIZE := 51200k
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt7615-firmware uboot-envtools
+endef
+TARGET_DEVICES += asus_rt-ac85u
+
 define Device/asus_rt-n56u-b1
   $(Device/dsa-migration)
   $(Device/uimage-lzma-loader)
@@ -481,6 +491,13 @@ define Device/asus_rt-ax53u
   IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | \
 	check-size
   DEVICE_PACKAGES := kmod-mt7915-firmware kmod-usb3 kmod-usb-ledtrig-usbport
+ifeq ($(IB),)
+ifneq ($(CONFIG_TARGET_ROOTFS_INITRAMFS),)
+  ARTIFACTS := initramfs-factory.trx
+  ARTIFACT/initramfs-factory.trx := append-image-stage initramfs-kernel.bin | \
+	check-size 16m | asus-trx -v 2 -n $$(DEVICE_MODEL) -b 386 -e 19999
+endif
+endif
 endef
 TARGET_DEVICES += asus_rt-ax53u
 
@@ -717,6 +734,18 @@ define Device/comfast_cf-ew72-v2
     IMAGE/factory.bin := append-kernel | append-rootfs | pad-rootfs | check-size
 endef
 TARGET_DEVICES += comfast_cf-ew72-v2
+
+define Device/comfast_cf-ew84
+  $(Device/dsa-migration)
+  $(Device/uimage-lzma-loader)
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := COMFAST
+  DEVICE_MODEL := CF-EW84
+  DEVICE_ALT0_VENDOR := NEWFAST
+  DEVICE_ALT0_MODEL := NF-A882
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615e kmod-mt7663-firmware-ap kmod-ledtrig-network
+endef
+TARGET_DEVICES += comfast_cf-ew84
 
 define Device/confiabits_mt7621-v1
   $(Device/dsa-migration)
@@ -1278,6 +1307,14 @@ define Device/elecom_wrc-gs
 	append-string MT7621_ELECOM_$$$$(ELECOM_HWNAME)
   DEVICE_PACKAGES := kmod-mt7615-firmware -uboot-envtools
 endef
+
+define Device/elecom_wmc-c2533gst
+  $(Device/elecom_wrc-gs)
+  IMAGE_SIZE := 24576k
+  DEVICE_MODEL := WMC-C2533GST
+  ELECOM_HWNAME := WMC-2HC
+endef
+TARGET_DEVICES += elecom_wmc-c2533gst
 
 define Device/elecom_wmc-m1267gst2
   $(Device/elecom_wrc-gs)
@@ -3243,14 +3280,17 @@ endef
 TARGET_DEVICES += ubnt_edgerouter-x-sfp
 
 define Device/ubnt_unifi-6-lite
-  $(Device/dsa-migration)
+  DEVICE_COMPAT_VERSION := 2.0
+  DEVICE_COMPAT_MESSAGE := \
+	Dual kernel paritition merged due to size constraints. \
+	Use sysupgrade -F; image must not exceed 15424KiB (~15MiB).
   DEVICE_VENDOR := Ubiquiti
   DEVICE_MODEL := UniFi U6 Lite
   DEVICE_DTS_CONFIG := config@1
   DEVICE_DTS_LOADADDR := 0x87000000
   DEVICE_PACKAGES += kmod-mt7603 kmod-mt7915-firmware -uboot-envtools
   KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
-  IMAGE_SIZE := 15424k
+  IMAGE_SIZE := 30848k
 endef
 TARGET_DEVICES += ubnt_unifi-6-lite
 

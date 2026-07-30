@@ -181,6 +181,7 @@ platform_do_upgrade() {
 	linksys,ea8300|\
 	linksys,mr6350|\
 	linksys,mr8300|\
+	linksys,mr9000|\
 	linksys,whw01|\
 	linksys,whw03v2)
 		platform_do_upgrade_linksys "$1"
@@ -236,6 +237,12 @@ platform_do_upgrade() {
 		;;
 	sony,ncp-hg100-cellular)
 		sony_emmc_do_upgrade "$1"
+		;;
+	sophos,apx120)
+		CI_UBIPART="rootfs"
+		# Strip fwtool trailer for eraseblock alignment before ubiformat.
+		fwtool -q -t -i /dev/null "$1" || true
+		nand_do_upgrade "$1"
 		;;
 	teltonika,rutx10|\
 	teltonika,rutx50|\
