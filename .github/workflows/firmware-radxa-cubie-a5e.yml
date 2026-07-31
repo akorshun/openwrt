@@ -49,7 +49,7 @@ jobs:
             gettext git libncurses-dev libssl-dev python3-setuptools \
             python3-dev python3 rsync swig unzip zlib1g-dev file wget zstd ccache \
             ecj fastjar java-propose-classpath libelf-dev libncursesw5-dev \
-            libdw-dev liblz4-dev libzstd-dev libxml-parser-perl
+            libdw-dev liblz4-dev libzstd-dev libxml-parser-perl libyaml-dev
 
       - name: Update feeds
         run: |
