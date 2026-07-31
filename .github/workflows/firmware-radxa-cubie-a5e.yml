@@ -125,9 +125,10 @@ jobs:
           if-no-files-found: error
 
       - name: Create GitHub Release
-        if: success() && startsWith(github.ref, 'refs/tags/')
+        if: success()
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
           name: Radxa Cubie A5E ${{ github.ref_name }}
           generate_release_notes: true
           files: artifacts/*
