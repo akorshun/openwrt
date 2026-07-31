@@ -5,12 +5,6 @@ on:
     paths:
       - '.github/workflows/toolchain.yml'
       - 'toolchain/**'
-  push:
-    paths:
-      - '.github/workflows/toolchain.yml'
-      - 'toolchain/**'
-    branches-ignore:
-      - master
 
 permissions:
   contents: read

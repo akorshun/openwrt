@@ -9,16 +9,6 @@ on:
       - 'include/kernel*'
       - 'package/kernel/**'
       - 'target/linux/**'
-  push:
-    paths:
-      - '.github/workflows/check-kernel-patches.yml'
-      - '.github/workflows/build.yml'
-      - '.github/workflows/kernel.yml'
-      - 'include/kernel*'
-      - 'package/kernel/**'
-      - 'target/linux/**'
-    branches-ignore:
-      - master
 
 permissions:
   contents: read

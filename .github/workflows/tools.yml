@@ -6,13 +6,6 @@ on:
       - 'include/**'
       - 'tools/**'
       - '.github/workflows/tools.yml'
-  push:
-    paths:
-      - 'include/**'
-      - 'tools/**'
-      - '.github/workflows/tools.yml'
-    branches-ignore:
-      - master
 
 permissions:
   contents: read
