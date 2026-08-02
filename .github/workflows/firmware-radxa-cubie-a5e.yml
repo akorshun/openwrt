@@ -1,6 +1,9 @@
 name: Build Radxa Cubie A5E
 # Builds firmware for the Radxa Cubie A5E (Allwinner A527, sunxi/cortexa53).
 # Runs only on tag pushes (or manual dispatch) — not on every commit.
+# Builds two variants in parallel: RAM timings tuned for Nanya 4GB modules
+# (default tree), and a "classic" variant for older board revisions that
+# reverts the DRAM timing tuning commit.
 
 on:
   workflow_dispatch:
@@ -26,9 +29,20 @@ concurrency:
 
 jobs:
   build:
-    name: sunxi/cortexa53 radxa-a5e
+    name: sunxi/cortexa53 radxa-a5e (${{ matrix.label }})
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suffix: nanya
+            label: "RAM Nanya 4GB"
+            revert_dram_patch: false
+          - suffix: classic
+            label: "Only for old classic revision"
+            revert_dram_patch: true
 
     steps:
       - name: Maximize build space
@@ -40,6 +54,13 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Revert DRAM timing tuning (classic revision only)
+        if: matrix.revert_dram_patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git revert --no-edit 27dca26a5f8d2dbf73d814745cc6b86db28e3ea6
 
       - name: Install build dependencies
         run: |
@@ -129,7 +150,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: radxa-cubie-a5e-firmware-${{ github.ref_name }}
+          name: radxa-cubie-a5e-firmware-${{ github.ref_name }}-${{ matrix.suffix }}
           path: artifacts/
           retention-days: 30
           if-no-files-found: error
@@ -138,8 +159,8 @@ jobs:
         if: success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
-          name: Radxa Cubie A5E ${{ github.ref_name }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && format('{0}-{1}', github.ref_name, matrix.suffix) || format('build-{0}-{1}', github.run_number, matrix.suffix) }}
+          name: Radxa Cubie A5E ${{ github.ref_name }} (${{ matrix.label }})
           generate_release_notes: true
           files: artifacts/*
 
@@ -147,7 +168,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-${{ github.ref_name }}
+          name: build-logs-${{ github.ref_name }}-${{ matrix.suffix }}
           path: |
             logs/
             .config
