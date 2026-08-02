@@ -54,6 +54,11 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # actions/checkout defaults to a 1-commit shallow clone, which
+          # doesn't include 27dca26 (it's ~12 commits back from HEAD) -
+          # `git revert` below needs it reachable locally.
+          fetch-depth: 50
 
       - name: Revert DRAM timing tuning (classic revision only)
         if: matrix.revert_dram_patch
