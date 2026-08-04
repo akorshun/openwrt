@@ -11,6 +11,7 @@ on:
       - 'toolchain/**'
     branches-ignore:
       - master
+      - openwrt-25.12-netcraze-nc-1812
 
 permissions:
   contents: read
