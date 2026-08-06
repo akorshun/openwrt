@@ -1,9 +1,29 @@
 name: Build Radxa Cubie A5E
-# Builds firmware for the Radxa Cubie A5E (Allwinner A527, sunxi/cortexa53).
-# Runs only on tag pushes (or manual dispatch) — not on every commit.
-# Builds two variants in parallel: RAM timings tuned for Nanya 4GB modules
-# (default tree), and a "classic" variant for older board revisions that
-# reverts the DRAM timing tuning commit.
+# Builds firmware for the Radxa Cubie A5E (Allwinner A527, sunxi/cortexa53)
+# from OpenWrt v25.12.5.
+#
+# Runs only on tag pushes (or manual dispatch) — never on ordinary commits or
+# pushes to the branch. Every run publishes its images as a GitHub release.
+#
+# The tag pattern is deliberately not 'v*': the stock github-release.yml
+# inherited from upstream fires on 'v*' and would race this workflow for the
+# same release.
+#
+# Builds two variants in parallel: "nanya" (current tree, DRAM timings tuned
+# for Nanya 4GB modules) and "classic" (reverts 27dca26 - the DRAM timing
+# tuning commit - for older board revisions that need the original timings).
+# That revert only touches a U-Boot defconfig, not the kernel config, so both
+# variants share the same expected vermagic below.
+#
+# The build config is seeded from the official buildbot config for this
+# release (.github/workflows/config/radxa-cubie-a5e.config) so that the
+# kernel config - and therefore the module ABI and the vermagic derived
+# from it - matches the official 25.12.5 build as closely as a board that
+# doesn't exist upstream can. That is what would make kmod-* packages from
+# the official feed loadable here. The vermagic is asserted below; it is
+# never forced. If the A523 patches add kernel modules the stock cortexa53
+# config doesn't have, CONFIG_ALL_KMODS=y will pull those in too and the
+# assertion will legitimately fail - see that step for what to do then.
 
 on:
   workflow_dispatch:
@@ -18,7 +38,7 @@ on:
           - "true"
   push:
     tags:
-      - 'v*'
+      - 'cubie-a5e-*'
 
 permissions:
   contents: write
@@ -27,11 +47,19 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Published in targets/sunxi/cortexa53/kmods/ for 25.12.5. The build must
+  # arrive at this value on its own; see the vermagic step below.
+  EXPECTED_KERNEL: 6.12.94-1
+  EXPECTED_VERMAGIC: 54c42a9af64da421c37305c250430d94
+
 jobs:
   build:
     name: sunxi/cortexa53 radxa-a5e (${{ matrix.label }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    # GitHub-hosted runners hard-stop at 6 h. CONFIG_ALL_KMODS=y plus the
+    # debug info the buildbot config enables makes this a long build.
+    timeout-minutes: 350
 
     strategy:
       fail-fast: false
@@ -48,8 +76,12 @@ jobs:
       - name: Maximize build space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+            /usr/local/.ghcup /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/share/swift || true
           sudo docker image prune --all --force || true
+          sudo apt-get clean || true
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile /swapfile || true
           df -h
 
       - name: Checkout
@@ -84,34 +116,50 @@ jobs:
 
       - name: Configure build (Radxa Cubie A5E only)
         run: |
-          rm -f .config
-          cat > .config <<'EOF'
-          CONFIG_TARGET_sunxi=y
-          CONFIG_TARGET_sunxi_cortexa53=y
-          CONFIG_TARGET_sunxi_cortexa53_DEVICE_radxa_radxa-a5e=y
-          # Explicitly select the board's U-Boot and its ATF (BL31) dependency.
-          # The variant-conditional DEPENDS in uboot-a523/Makefile
-          # (+PACKAGE_u-boot-radxa_radxa-a5e:trusted-firmware-a-sunxi-a523)
-          # is not reliably resolved by a non-interactive `make defconfig`
-          # from a minimal seed config, so bl31_sunxi-a523.bin never got
-          # built/staged and binman failed. Select both packages directly.
-          CONFIG_PACKAGE_u-boot-radxa_radxa-a5e=y
-          CONFIG_PACKAGE_trusted-firmware-a-sunxi-a523=y
-          CONFIG_ALL_KMODS=n
-          CONFIG_ALL=n
-          CONFIG_AUTOREMOVE=n
-          CONFIG_LOCALMIRROR=""
-          # LuCI web UI (matches official release defaults)
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-ssl=y
-          EOF
+          cp .github/workflows/config/radxa-cubie-a5e.config .config
+          # Not from the buildbot config, and not a kernel config option:
+          # writes per-package logs under logs/ so a failed build is
+          # diagnosable from the uploaded artifact.
+          echo 'CONFIG_BUILD_LOG=y' >> .config
           make defconfig
-          echo "----- Selected target -----"
+
+          echo "----- Selected target/device -----"
           grep -E '^CONFIG_TARGET_(sunxi|BOARD|ARCH)' .config | head -20
-          echo "----- Selected device -----"
           grep -E '^CONFIG_TARGET.*radxa-a5e' .config
-          echo "----- Selected bootloader/ATF -----"
-          grep -E '^CONFIG_PACKAGE_(u-boot-radxa_radxa-a5e|trusted-firmware-a-sunxi-a523)=y' .config || echo "WARNING: not selected!"
+
+          # `make defconfig` is free to drop anything it considers
+          # unreachable, so check the seed survived before spending hours
+          # on a build whose kmods would not match the official feed.
+          echo "----- Kernel-ABI-relevant options -----"
+          fail=0
+          grep -qx 'CONFIG_ALL_KMODS=y' .config || { echo "::error::CONFIG_ALL_KMODS lost"; fail=1; }
+          grep -qx 'CONFIG_COLLECT_KERNEL_DEBUG=y' .config || { echo "::error::CONFIG_COLLECT_KERNEL_DEBUG lost (selects KERNEL_DEBUG_INFO)"; fail=1; }
+          grep -qx 'CONFIG_TARGET_DEVICE_sunxi_cortexa53_DEVICE_radxa_radxa-a5e=y' .config || { echo "::error::device not selected"; fail=1; }
+          grep -qx 'CONFIG_PACKAGE_u-boot-radxa_radxa-a5e=y' .config || { echo "::error::u-boot-radxa_radxa-a5e lost"; fail=1; }
+          grep -qx 'CONFIG_PACKAGE_trusted-firmware-a-sunxi-a523=y' .config || { echo "::error::trusted-firmware-a-sunxi-a523 lost"; fail=1; }
+
+          # include/kernel-defaults.mk:116 copies every CONFIG_KERNEL_*
+          # straight into the kernel config with the prefix stripped, so
+          # each one is part of the ABI the official kmods were built
+          # against. config.buildinfo is a diffconfig - anything it states
+          # explicitly is a deviation from the tree defaults we would
+          # otherwise share, so all of it has to be present here too.
+          # BUILD_USER/BUILD_DOMAIN are the exception: they only set
+          # KBUILD_BUILD_USER/HOST for the version banner, are not kernel
+          # config symbols, and are deliberately left at our own values.
+          curl -fsSL --retry 3 -o /tmp/config.buildinfo \
+            "https://downloads.openwrt.org/releases/25.12.5/targets/sunxi/cortexa53/config.buildinfo"
+          { grep -E '^(# )?CONFIG_KERNEL_' /tmp/config.buildinfo \
+            | grep -vE 'CONFIG_KERNEL_BUILD_(USER|DOMAIN)' || true; } > /tmp/kernel-opts.want
+          echo "official CONFIG_KERNEL_* deviations:"
+          cat /tmp/kernel-opts.want
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            grep -qxF "$line" .config || { echo "::error::kernel option differs from the official build: $line"; fail=1; }
+          done < /tmp/kernel-opts.want
+
+          [ "$fail" = 0 ] || exit 1
+          echo "seed survived defconfig"
 
       - name: Download sources
         run: make download -j8
@@ -128,11 +176,60 @@ jobs:
             ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
             make toolchain/install -j1 V=s
 
+      - name: Build kernel and modules
+        # No -j1 V=s retry here: with CONFIG_ALL_KMODS=y a serial rebuild
+        # would not fit in the runner's 6 h budget. logs/ is uploaded on
+        # failure instead (CONFIG_BUILD_LOG=y).
+        run: |
+          make target/linux/compile -j$(nproc) \
+            ${{ inputs.verbose == 'true' && 'V=s' || '' }}
+
+      - name: Assert vermagic matches the published 25.12.5 feed
+        # Placed here, before the rest of the build, because this is the
+        # first point at which .vermagic exists - a mismatch means the
+        # remaining hours would produce an image whose distfeeds.list
+        # points at a kmods feed it cannot use.
+        #
+        # If this legitimately fails - e.g. because the A523 patches add
+        # kernel modules stock cortexa53 doesn't have, and CONFIG_ALL_KMODS=y
+        # pulls those in - do NOT paper over it by forcing LINUX_VERMAGIC or
+        # hand-editing .vermagic (see the revert this workflow is modeled
+        # after: that hides a real ABI mismatch instead of fixing it, and
+        # OpenWrt's generic/hack-6.12/204-module_strip.patch compiles the
+        # kernel-side vermagic check out of check_modinfo(), so nothing else
+        # would catch it either). Update EXPECTED_VERMAGIC to the actual
+        # computed value instead, and drop the official-feed line from
+        # distfeeds.list (see the next step) since official kmod-* packages
+        # would then genuinely not match this kernel's ABI - this build's
+        # own bundled kmods tarball is what stays trustworthy either way.
+        run: |
+          echo "----- LINUX_VERSION / LINUX_RELEASE -----"
+          make --no-print-directory val.LINUX_VERSION val.LINUX_RELEASE 2>/dev/null || true
+
+          VM=$(find build_dir -name '.vermagic' 2>/dev/null | head -1)
+          if [ -z "$VM" ]; then
+            echo "::error::no .vermagic found in build_dir"
+            exit 1
+          fi
+          ACTUAL=$(cat "$VM")
+          echo "computed vermagic: $ACTUAL"
+          echo "expected vermagic: $EXPECTED_VERMAGIC"
+
+          if [ "$ACTUAL" != "$EXPECTED_VERMAGIC" ]; then
+            echo "::error::vermagic is $ACTUAL, expected $EXPECTED_VERMAGIC"
+            echo "The kernel config differs from the official 25.12.5 buildbot"
+            echo "config, so kmod-* packages from the official feed were built"
+            echo "against a different kernel ABI and must not be advertised to"
+            echo "this image. Diff the seed config against"
+            echo "https://downloads.openwrt.org/releases/25.12.5/targets/sunxi/cortexa53/config.buildinfo"
+            exit 1
+          fi
+          echo "vermagic OK"
+
       - name: Build firmware
         run: |
           make -j$(nproc) \
-            ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
-            make -j1 V=s
+            ${{ inputs.verbose == 'true' && 'V=s' || '' }}
 
       - name: List output
         if: always()
@@ -142,6 +239,25 @@ jobs:
           echo "----- disk usage -----"
           df -h
 
+      - name: Verify the shipped kmods feed line
+        run: |
+          echo "----- generated distfeeds.list -----"
+          DF=$(find build_dir -path '*/etc/apk/repositories.d/distfeeds.list' 2>/dev/null | head -1)
+          if [ -z "$DF" ]; then
+            echo "::error::generated distfeeds.list not found"
+            exit 1
+          fi
+          cat "$DF"
+
+          # target/linux/sunxi/cortexa53/base-files carries this line with a
+          # hardcoded kernel version and vermagic; keep it honest.
+          WANT="/targets/sunxi/cortexa53/kmods/${EXPECTED_KERNEL}-${EXPECTED_VERMAGIC}/packages.adb"
+          if ! grep -qF "$WANT" "$DF"; then
+            echo "::error::distfeeds.list does not carry $WANT"
+            exit 1
+          fi
+          echo "kmods feed line OK"
+
       - name: Collect artifacts
         if: success()
         run: |
@@ -149,7 +265,15 @@ jobs:
           cp -v bin/targets/sunxi/cortexa53/*radxa-a5e* artifacts/ 2>/dev/null || true
           cp -v bin/targets/sunxi/cortexa53/sha256sums artifacts/ 2>/dev/null || true
           cp -v bin/targets/sunxi/cortexa53/profiles.json artifacts/ 2>/dev/null || true
-          ls -lhR artifacts/
+          cp -v .config artifacts/build.config 2>/dev/null || true
+          # CONFIG_ALL_KMODS=y means this build produced the whole kmods
+          # feed itself. Ship it: same source, same config, same vermagic,
+          # so it works offline and does not depend on the feed staying up.
+          KDIR=$(find bin/targets/sunxi/cortexa53/kmods -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
+          if [ -n "$KDIR" ]; then
+            tar -czf "artifacts/kmods-$(basename "$KDIR").tar.gz" -C "$KDIR" .
+          fi
+          ls -lh artifacts/
 
       - name: Upload firmware artifacts
         if: success()
