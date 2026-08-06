@@ -135,7 +135,7 @@ jobs:
           grep -qx 'CONFIG_ALL_KMODS=y' .config || { echo "::error::CONFIG_ALL_KMODS lost"; fail=1; }
           grep -qx 'CONFIG_COLLECT_KERNEL_DEBUG=y' .config || { echo "::error::CONFIG_COLLECT_KERNEL_DEBUG lost (selects KERNEL_DEBUG_INFO)"; fail=1; }
           grep -qx 'CONFIG_TARGET_DEVICE_sunxi_cortexa53_DEVICE_radxa_radxa-a5e=y' .config || { echo "::error::device not selected"; fail=1; }
-          grep -qx 'CONFIG_PACKAGE_u-boot-radxa_radxa-a5e=y' .config || { echo "::error::u-boot-radxa_radxa-a5e lost"; fail=1; }
+          grep -qx 'CONFIG_PACKAGE_u-boot-radxa-cubie-a5e=y' .config || { echo "::error::u-boot-radxa-cubie-a5e lost"; fail=1; }
           grep -qx 'CONFIG_PACKAGE_trusted-firmware-a-sunxi-a523=y' .config || { echo "::error::trusted-firmware-a-sunxi-a523 lost"; fail=1; }
 
           # include/kernel-defaults.mk:116 copies every CONFIG_KERNEL_*
