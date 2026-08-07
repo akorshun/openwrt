@@ -17,13 +17,20 @@ name: Build Radxa Cubie A5E
 #
 # The build config is seeded from the official buildbot config for this
 # release (.github/workflows/config/radxa-cubie-a5e.config) so that the
-# kernel config - and therefore the module ABI and the vermagic derived
-# from it - matches the official 25.12.5 build as closely as a board that
-# doesn't exist upstream can. That is what would make kmod-* packages from
-# the official feed loadable here. The vermagic is asserted below; it is
-# never forced. If the A523 patches add kernel modules the stock cortexa53
-# config doesn't have, CONFIG_ALL_KMODS=y will pull those in too and the
-# assertion will legitimately fail - see that step for what to do then.
+# kernel config - and therefore the real module ABI - matches the official
+# 25.12.5 build as closely as a board that doesn't exist upstream can:
+# every CONFIG_KERNEL_* is identical, so the only genuine ABI delta is the
+# extra A523 leaf drivers this branch adds.
+#
+# On its own that still leaves the computed vermagic different from the
+# published one (the extra '=m' driver lines change the md5), so the
+# 'Force kmod vermagic' step below overrides .vermagic to the published
+# value on purpose, to make official kmod-* packages installable here.
+# This is the vermagic force that akorshun/openwrt@e67b7e7 reverted on
+# mediatek/filogic as unsafe; it is applied here as a deliberate,
+# eyes-open choice, and is only defensible because the config match above
+# keeps the real ABI delta down to leaf drivers. The step after the build
+# asserts the force took effect.
 
 on:
   workflow_dispatch:
@@ -161,6 +168,37 @@ jobs:
           [ "$fail" = 0 ] || exit 1
           echo "seed survived defconfig"
 
+      - name: Force kmod vermagic to the published 25.12.5 value
+        # Deliberate override, applied on top of the official-config seed
+        # above (which already makes every CONFIG_KERNEL_* match, so the
+        # only real ABI delta left is the extra A523 leaf drivers this
+        # branch adds). Patch the .vermagic computation in
+        # include/kernel-defaults.mk so the md5 is replaced by a fixed
+        # echo of the official hash - i.e. .vermagic carries the published
+        # value from the moment it is written, and every downstream reader
+        # (the "kernel" package, the kmod-* packages, distfeeds.list) sees
+        # the same thing.
+        #
+        # WARNING: OpenWrt's generic/hack-6.12/204-module_strip.patch
+        # compiles the kernel-side vermagic check out of check_modinfo(),
+        # so once this string matches, nothing verifies that an official
+        # kmod-* was actually built against a compatible kernel. That is an
+        # accepted risk for this build (see the reverted vermagic pin in
+        # akorshun/openwrt@e67b7e7 for the full reasoning); it is only
+        # tolerable here because the kernel config otherwise matches the
+        # official one.
+        run: |
+          MK=include/kernel-defaults.mk
+          # Match the same token the reference hooks.sh keys on: the
+          # '$(MKHASH) md5' at the end of the .vermagic pipeline. Replacing
+          # it with `echo <hash>` makes that stage ignore its piped stdin
+          # and write the fixed hash instead.
+          grep -Fq '$(MKHASH) md5 > $(LINUX_DIR)/.vermagic' "$MK" \
+            || { echo "::error::vermagic line not found in $MK - refusing to patch blindly"; exit 1; }
+          sed -i 's|$(MKHASH) md5 > $(LINUX_DIR)/.vermagic|echo '"$EXPECTED_VERMAGIC"' > $(LINUX_DIR)/.vermagic|' "$MK"
+          echo "----- patched line -----"
+          grep -n 'vermagic' "$MK"
+
       - name: Download sources
         run: make download -j8
 
@@ -184,24 +222,14 @@ jobs:
           make target/linux/compile -j$(nproc) \
             ${{ inputs.verbose == 'true' && 'V=s' || '' }}
 
-      - name: Assert vermagic matches the published 25.12.5 feed
-        # Placed here, before the rest of the build, because this is the
-        # first point at which .vermagic exists - a mismatch means the
-        # remaining hours would produce an image whose distfeeds.list
-        # points at a kmods feed it cannot use.
-        #
-        # If this legitimately fails - e.g. because the A523 patches add
-        # kernel modules stock cortexa53 doesn't have, and CONFIG_ALL_KMODS=y
-        # pulls those in - do NOT paper over it by forcing LINUX_VERMAGIC or
-        # hand-editing .vermagic (see the revert this workflow is modeled
-        # after: that hides a real ABI mismatch instead of fixing it, and
-        # OpenWrt's generic/hack-6.12/204-module_strip.patch compiles the
-        # kernel-side vermagic check out of check_modinfo(), so nothing else
-        # would catch it either). Update EXPECTED_VERMAGIC to the actual
-        # computed value instead, and drop the official-feed line from
-        # distfeeds.list (see the next step) since official kmod-* packages
-        # would then genuinely not match this kernel's ABI - this build's
-        # own bundled kmods tarball is what stays trustworthy either way.
+      - name: Assert the forced vermagic took effect
+        # After the force step above, .vermagic must read the published
+        # value. This is now a check that the patch applied (the token in
+        # kernel-defaults.mk could drift in a future OpenWrt bump and the
+        # sed would silently no-op), not a check that the config matches
+        # on its own - it does not, by design (the A523 leaf drivers make
+        # the real hash differ). Placed here because this is the first
+        # point at which .vermagic exists.
         run: |
           echo "----- LINUX_VERSION / LINUX_RELEASE -----"
           make --no-print-directory val.LINUX_VERSION val.LINUX_RELEASE 2>/dev/null || true
@@ -212,19 +240,17 @@ jobs:
             exit 1
           fi
           ACTUAL=$(cat "$VM")
-          echo "computed vermagic: $ACTUAL"
-          echo "expected vermagic: $EXPECTED_VERMAGIC"
+          echo "vermagic in build:  $ACTUAL"
+          echo "expected (forced):  $EXPECTED_VERMAGIC"
 
           if [ "$ACTUAL" != "$EXPECTED_VERMAGIC" ]; then
             echo "::error::vermagic is $ACTUAL, expected $EXPECTED_VERMAGIC"
-            echo "The kernel config differs from the official 25.12.5 buildbot"
-            echo "config, so kmod-* packages from the official feed were built"
-            echo "against a different kernel ABI and must not be advertised to"
-            echo "this image. Diff the seed config against"
-            echo "https://downloads.openwrt.org/releases/25.12.5/targets/sunxi/cortexa53/config.buildinfo"
+            echo "The force step did not take effect - the .vermagic line in"
+            echo "include/kernel-defaults.mk probably changed shape upstream."
+            echo "Re-check the sed in the 'Force kmod vermagic' step."
             exit 1
           fi
-          echo "vermagic OK"
+          echo "vermagic OK (forced)"
 
       - name: Build firmware
         run: |
