@@ -52,6 +52,7 @@ tools-y += libressl
 tools-y += libtool
 tools-y += lzma
 tools-y += m4
+tools-y += make
 tools-y += make-ext4fs
 tools-y += meson
 tools-y += missing-macros
