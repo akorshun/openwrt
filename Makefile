@@ -28,9 +28,40 @@ ifneq ($(OPENWRT_BUILD),1)
   export GREP_OPTIONS
   CDPATH=
   export CDPATH
+
+# ninja accepts the GNU make jobserver only in its FIFO form, which make writes
+# from 4.4 onwards. An older make sends --jobserver-auth=<fd>,<fd>, which ninja
+# discards, so every cmake and meson package builds at nproc + 2 whatever -j
+# asks for. Hand the build to the make from tools/ when the host make is old.
+HOST_MAKE:=$(TOPDIR)/staging_dir/host/bin/make
+MAKE_IS_OLD:=$(filter-out 4.4,$(firstword $(shell printf '%s\n' 4.4 $(MAKE_VERSION) | sort -V)))
+
+ifeq ($(REEXEC_MAKE),1)
+  MAKE_IS_OLD:=
+endif
+
+ifneq ($(MAKE_IS_OLD),)
+  REEXEC_GOALS:=$(if $(MAKECMDGOALS),$(MAKECMDGOALS),world)
+
+.PHONY: __reexec_make $(REEXEC_GOALS)
+
+$(REEXEC_GOALS): __reexec_make
+	@:
+
+__reexec_make:
+	@[ -x "$(HOST_MAKE)" ] || { \
+		echo "GNU make $(MAKE_VERSION) cannot drive ninja; building tools/make"; \
+		OPENWRT_BUILD= $(MAKE) REEXEC_MAKE=1 tools/make/compile; \
+	}
+	@echo "GNU make $(MAKE_VERSION) lacks the FIFO jobserver; using $(HOST_MAKE)"
+	@+OPENWRT_BUILD= MAKELEVEL= \
+		MAKEFLAGS='$(filter-out --jobserver-auth=% --jobserver-fds=%,$(MAKEFLAGS))' \
+		"$(HOST_MAKE)" REEXEC_MAKE=1 $(MAKEOVERRIDES) $(REEXEC_GOALS)
+else
   include $(TOPDIR)/include/debug.mk
   include $(TOPDIR)/include/depends.mk
   include $(TOPDIR)/include/toplevel.mk
+endif
 else
   include rules.mk
   include $(INCLUDE_DIR)/depends.mk
