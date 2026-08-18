@@ -1595,6 +1595,20 @@ define Device/gatonetworks_gdsp
 endef
 TARGET_DEVICES += gatonetworks_gdsp
 
+define Device/glinet_gl-be14000
+  DEVICE_VENDOR := GL.iNet
+  DEVICE_MODEL := GL-BE14000
+  DEVICE_DTS := mt7988a-glinet-gl-be14000
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_DTS_LOADADDR := 0x45f00000
+  KERNEL_LOADADDR := 0x46000000
+  DEVICE_PACKAGES := kmod-mt7996-233-firmware mt7988-wo-firmware kmod-hwmon-pwmfan \n	kmod-usb3 kmod-sfp kmod-dsa-yt921x rtl8261c-firmware e2fsprogs f2fsck mkf2fs
+  IMAGES := sysupgrade.bin factory.bin
+  IMAGE/factory.bin := append-kernel | pad-to 32M | append-rootfs
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += glinet_gl-be14000
+
 define Device/glinet_gl-mt2500
   DEVICE_VENDOR := GL.iNet
   DEVICE_MODEL := GL-MT2500
