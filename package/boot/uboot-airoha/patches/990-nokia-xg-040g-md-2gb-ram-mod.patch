@@ -1,0 +1,33 @@
+Nokia XG-040G-MD: declare 2 GB of DRAM (RAM mod)
+
+Local patch, not upstream: only valid for boards whose DDR chip has been
+replaced with a 2 GB part. Applies on top of 401-add-nokia-xg-040g-md.patch.
+
+--- a/arch/arm/dts/an7581-nokia-xg-040g-md-u-boot.dtsi
++++ b/arch/arm/dts/an7581-nokia-xg-040g-md-u-boot.dtsi
+@@ -5,3 +5,25 @@
+ &gdm1 {
+ 	status = "okay";
+ };
++
++/*
++ * 2 GB RAM mod. The board ships with 512 MB, so the upstream board DT added
++ * by 401-add-nokia-xg-040g-md.patch declares 512 MB and clamps Linux to it.
++ *
++ * U-Boot takes its DRAM size from its own /memory node (fdtdec_setup_mem_
++ * size_base()) and then overwrites the kernel's /memory node on bootm via
++ * fdt_fixup_memory_banks(), so without this override the kernel is handed
++ * 512 MB no matter what the kernel DT says. linux,usable-memory-range is
++ * not copied to the kernel DT by U-Boot - it is fixed on the kernel side in
++ * an7581-nokia_xg-040g-md-common.dtsi - but is kept in sync here so U-Boot's
++ * own view of usable RAM matches. The first 2 MB stay reserved for ATF.
++ */
++/ {
++	memory@80000000 {
++		reg = <0x0 0x80000000 0x0 0x80000000>;
++	};
++
++	chosen {
++		linux,usable-memory-range = <0x0 0x80200000 0x0 0x7fe00000>;
++	};
++};

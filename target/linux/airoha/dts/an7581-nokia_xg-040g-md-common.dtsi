@@ -8,6 +8,28 @@
 #include "an758x-nokia_xg-040g-common.dtsi"
 
 / {
+	/*
+	 * 2 GB RAM mod. The board ships with 512 MB and
+	 * an758x-nokia_xg-040g-common.dtsi declares exactly that, so both
+	 * properties have to be raised here.
+	 *
+	 * /memory alone is not enough: U-Boot rewrites it on bootm from its own
+	 * DT (see package/boot/uboot-airoha/patches/
+	 * 990-nokia-xg-040g-md-2gb-ram-mod.patch), so the two must be changed
+	 * together. linux,usable-memory-range is the one U-Boot never touches
+	 * and it caps memblock on arm64, so a stale 510 MB value here would pin
+	 * the kernel to 512 MB whatever /memory says. The first 2 MB stay
+	 * reserved for ATF/BL31.
+	 */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x80000000>;
+	};
+
+	chosen {
+		linux,usable-memory-range = <0x0 0x80200000 0x0 0x7fe00000>;
+	};
+
 	gpio-keys {
 		compatible = "gpio-keys";
 
