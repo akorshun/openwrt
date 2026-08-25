@@ -87,6 +87,7 @@ jobs:
             echo 'CONFIG_TARGET_airoha=y'
             echo 'CONFIG_TARGET_airoha_an7581=y'
             echo 'CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y'
+            echo 'CONFIG_PACKAGE_luci=y'
             echo 'CONFIG_BUILD_LOG=y'
           } > .config
           make defconfig
@@ -100,7 +101,12 @@ jobs:
           # would produce no image at all.
           grep -qE '^CONFIG_TARGET(_DEVICE)?_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y' .config \
             || { echo "::error::nokia_xg-040g-md-ubi is not selected after defconfig"; exit 1; }
-          echo "device selected"
+          # LuCI comes from the luci feed, so it only survives defconfig once
+          # the feeds are installed. If it silently dropped out the image would
+          # ship without a web UI and nothing else here would notice.
+          grep -qx 'CONFIG_PACKAGE_luci=y' .config \
+            || { echo "::error::CONFIG_PACKAGE_luci did not survive defconfig - is the luci feed installed?"; exit 1; }
+          echo "device selected, LuCI included"
 
       - name: Assert the 2 GB overrides are in the tree
         # Cheap source-level check before the expensive part: this branch is
@@ -232,6 +238,9 @@ jobs:
               `/memory` node on `bootm`, so without this half the kernel is handed
               512 MB whatever the kernel DT says.
 
+            Also includes **LuCI** (`CONFIG_PACKAGE_luci=y`), which a stock airoha
+            build does not ship.
+
             ### Files
 
             * `*-squashfs-sysupgrade.itb` - normal sysupgrade image
@@ -239,9 +248,11 @@ jobs:
             * `*-bl31-uboot.fip` - BL31 plus the patched U-Boot. **This is the file that
               actually unlocks the 2 GB**; flashing only the sysupgrade image leaves the
               board at 512 MB.
-            * `*-preloader.bin` - BL2, unchanged from stock. DDR training lives here, so
-              if the modded chip is not trained to its full size by the stock BL2, no DT
-              change can help.
+            * `*-preloader.bin` - BL2. On this base it is built from source
+              (arm-trusted-firmware-airoha 2.10) rather than taken from the prebuilt
+              blob the older tree shipped, so it is not the same binary an older
+              build put on the board. DDR training lives here: if the modded chip is
+              not trained to its full size by BL2, no DT change can help.
 
             After flashing, U-Boot should print `DRAM:  2 GiB` and `free -m` should
             report roughly 2 GB.
