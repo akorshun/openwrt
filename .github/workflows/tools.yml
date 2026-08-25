@@ -13,6 +13,7 @@ on:
       - '.github/workflows/tools.yml'
     branches-ignore:
       - master
+      - main-nokia-xg-040g-md-2gb
 
 permissions:
   contents: read

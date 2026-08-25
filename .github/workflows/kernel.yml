@@ -19,6 +19,7 @@ on:
       - 'target/linux/**'
     branches-ignore:
       - master
+      - main-nokia-xg-040g-md-2gb
   workflow_dispatch:
 
 permissions:
