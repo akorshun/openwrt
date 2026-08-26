@@ -124,6 +124,18 @@ jobs:
           [ "$fail" = 0 ] || exit 1
           echo "source overrides present"
 
+      - name: Assert lan4 is WAN by default
+        # Stock upstream puts lan1-4 in one LAN bridge with no WAN interface
+        # at all (the board is normally a GPON ONT and uplinks over PON, not
+        # copper). This branch instead makes lan4 the default WAN port, so
+        # check the board.d script actually says that before spending hours
+        # on a build that would ship the stock all-LAN config instead.
+        run: |
+          NET=target/linux/airoha/an7581/base-files/etc/board.d/02_network
+          grep -q 'ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "lan4"' "$NET" \
+            || { echo "::error::$NET does not set lan4 as the default WAN port"; exit 1; }
+          echo "lan4-as-WAN default present"
+
       - name: Download sources
         run: make download -j8
 
@@ -237,6 +249,16 @@ jobs:
               the board DT. U-Boot sizes DRAM from its own DT and rewrites the kernel's
               `/memory` node on `bootm`, so without this half the kernel is handed
               512 MB whatever the kernel DT says.
+
+            **Network default also changed:** stock upstream puts all four Ethernet
+            ports (lan1-4) in one LAN bridge with no WAN interface at all, since the
+            board is normally provisioned as a GPON ONT and uplinks over the PON port
+            instead of copper. This build instead sets **lan4 as the default WAN port**
+            (DHCP client) and keeps lan1-3 in the LAN bridge
+            (`target/linux/airoha/an7581/base-files/etc/board.d/02_network`). Useful if
+            you are running this board as a router from a copper uplink rather than as
+            an ONT. Reconfigurable afterwards in LuCI or `/etc/config/network` like on
+            any other device.
 
             Also includes **LuCI** (`CONFIG_PACKAGE_luci=y`), which a stock airoha
             build does not ship.

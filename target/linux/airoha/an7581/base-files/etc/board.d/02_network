@@ -22,7 +22,12 @@ an7581_setup_interfaces()
 		;;
 	nokia,xg-040g-md |\
 	nokia,xg-040g-md-ubi)
-		ucidef_set_interface_lan "lan1 lan2 lan3 lan4"
+		# 2 GB RAM mod default: lan4 as WAN (DHCP client), lan1-3 in the LAN
+		# bridge. Stock upstream puts all four ports in one LAN bridge with
+		# no WAN at all, since the board is normally provisioned as a GPON
+		# ONT and takes its uplink from the PON port instead of a copper
+		# port.
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "lan4"
 		;;
 	*)
 		echo "Unsupported hardware. Network interfaces not initialized"
