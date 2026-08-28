@@ -9,11 +9,16 @@ name: Build Radxa Cubie A5E
 # inherited from upstream fires on 'v*' and would race this workflow for the
 # same release.
 #
-# Builds two variants in parallel: "nanya" (current tree, DRAM timings tuned
-# for Nanya 4GB modules) and "classic" (reverts 27dca26 - the DRAM timing
-# tuning commit - for older board revisions that need the original timings).
-# That revert only touches a U-Boot defconfig, not the kernel config, so both
-# variants share the same expected vermagic below.
+# Builds three variants in parallel, differing only in the U-Boot DRAM
+# timing values for configs/radxa-cubie-a5e_defconfig - none of it touches
+# the kernel config, so all three variants share the same expected vermagic
+# below:
+#   - "nanya":   current tree, DRAM timings tuned for Nanya 4GB modules
+#   - "classic": reverts 27dca26 (the Nanya tuning commit), for older board
+#                revisions that need the original timings
+#   - "samsung": applies .github/workflows/patches/samsung-2gb-dram-timings.patch
+#                on top of the Nanya baseline (TPR6/TPR10 already match;
+#                only TPR11/TPR12 change), for the 2GB Samsung RAM revision
 #
 # The build config is seeded from the official buildbot config for this
 # release (.github/workflows/config/radxa-cubie-a5e.config) so that the
@@ -75,9 +80,15 @@ jobs:
           - suffix: nanya
             label: "RAM Nanya 4GB"
             revert_dram_patch: false
+            samsung_dram_patch: false
           - suffix: classic
             label: "Only for old classic revision"
             revert_dram_patch: true
+            samsung_dram_patch: false
+          - suffix: samsung
+            label: "RAM Samsung 2GB"
+            revert_dram_patch: false
+            samsung_dram_patch: true
 
     steps:
       - name: Maximize build space
@@ -105,6 +116,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git revert --no-edit 27dca26a5f8d2dbf73d814745cc6b86db28e3ea6
+
+      - name: Apply Samsung 2GB DRAM timings (samsung revision only)
+        # Held outside package/boot/uboot-a523/patches/ on purpose: patches
+        # in that directory apply to every U-Boot variant built from the
+        # shared uboot-a523 package (walnutpi_2b, orangepi_4a, avaota-a1,
+        # x96q_pro_plus, radxa-cubie-a5e), so committing this permanently
+        # would make it the default for "nanya" and "classic" too. Copying
+        # it in only for this matrix job keeps it scoped to this one build.
+        if: matrix.samsung_dram_patch
+        run: |
+          cp .github/workflows/patches/samsung-2gb-dram-timings.patch \
+            package/boot/uboot-a523/patches/257-sunxi-a527-radxa-cubie-a5e-samsung-2gb-dram-timings.patch
 
       - name: Install build dependencies
         run: |
