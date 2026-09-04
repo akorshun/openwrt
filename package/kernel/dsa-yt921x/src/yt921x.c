@@ -29,6 +29,21 @@
 #include "yt921x.h"
 #include "yt921x_proto.h"
 
+/* 6.12 API glue.
+ *
+ * struct flow_action_police only got its name in 7.0; on 6.12 the police
+ * parameters are an anonymous struct inside struct flow_action_entry, so
+ * borrow that type. flow_cls_common_offload grew skip_sw in 6.13; without
+ * it, rules the hardware cannot apply in full stay software-assisted, which
+ * is what tc does by default when neither skip_sw nor skip_hw is given.
+ */
+typedef typeof(((struct flow_action_entry *)0)->police) yt921x_police_t;
+
+static inline bool yt921x_cls_skip_sw(const struct flow_cls_offload *cls)
+{
+	return false;
+}
+
 /* dsa_bridge_ports() only reached <net/dsa.h> in 7.1; 6.12 needs a local one. */
 static u32 yt921x_bridge_ports(struct dsa_switch *ds,
 			       const struct net_device *bdev)
@@ -1290,7 +1305,7 @@ yt921x_marker_tfm(struct yt921x_marker *marker, u64 rate, u64 burst,
 
 static int
 yt921x_marker_tfm_police(struct yt921x_marker *marker,
-			 const struct flow_action_police *police,
+			 const yt921x_police_t *police,
 			 unsigned int flags, struct yt921x_priv *priv, int port,
 			 struct netlink_ext_ack *extack)
 {
@@ -1321,7 +1336,7 @@ yt921x_marker_tfm_shape(struct yt921x_marker *marker, u64 rate, u64 burst,
 }
 
 static int
-yt921x_police_validate(const struct flow_action_police *police,
+yt921x_police_validate(const yt921x_police_t *police,
 		       const struct flow_action *action,
 		       const struct flow_action_entry *act,
 		       struct netlink_ext_ack *extack)
@@ -1397,7 +1412,7 @@ static void yt921x_dsa_port_policer_del(struct dsa_switch *ds, int port)
 
 static int
 yt921x_port_policer_add(struct dsa_switch *ds, int port,
-			const struct flow_action_police *police,
+			const yt921x_police_t *police,
 			struct netlink_ext_ack *extack)
 {
 	struct yt921x_priv *priv = to_yt921x_priv(ds);
@@ -1434,7 +1449,7 @@ static int
 yt921x_dsa_port_policer_add(struct dsa_switch *ds, int port,
 			    struct dsa_mall_policer_tc_entry *policer)
 {
-	struct flow_action_police police = {
+	yt921x_police_t police = {
 		.rate_bytes_ps = policer->rate_bytes_per_sec,
 		.burst = policer->burst,
 		.exceed.act_id = FLOW_ACTION_DROP,
@@ -1712,7 +1727,7 @@ static int
 yt921x_acl_rule_ext_parse_flow_entries(struct yt921x_acl_rule_ext *ruleext,
 				       const struct flow_cls_offload *cls)
 {
-	const struct flow_rule *rule = flow_cls_offload_flow_rule(cls);
+	const struct flow_rule *rule = flow_cls_offload_flow_rule((struct flow_cls_offload *)cls);
 	struct yt921x_acl_entry *entries = ruleext->r.entries;
 	struct netlink_ext_ack *extack = cls->common.extack;
 	const struct flow_dissector *dissector;
@@ -2066,7 +2081,7 @@ yt921x_acl_rule_ext_parse_flow_action(struct yt921x_acl_rule_ext *ruleext,
 				      const struct flow_cls_offload *cls,
 				      struct yt921x_priv *priv, int port)
 {
-	const struct flow_rule *rule = flow_cls_offload_flow_rule(cls);
+	const struct flow_rule *rule = flow_cls_offload_flow_rule((struct flow_cls_offload *)cls);
 	const struct flow_action *flow_action = &rule->action;
 	struct netlink_ext_ack *extack = cls->common.extack;
 	enum flow_action_id redir_act = NUM_FLOW_ACTIONS;
@@ -2137,7 +2152,7 @@ yt921x_acl_rule_ext_parse_flow_action(struct yt921x_acl_rule_ext *ruleext,
 			action[1] |= YT921X_ACL_ACTb_PRIO(act->priority);
 			break;
 		case FLOW_ACTION_POLICE: {
-			const struct flow_action_police *police = &act->police;
+			const yt921x_police_t *police = &act->police;
 
 			if (seen_police) {
 				action[0] &= ~YT921X_ACL_ACTa_METER_EN;
@@ -2162,7 +2177,7 @@ yt921x_acl_rule_ext_parse_flow_action(struct yt921x_acl_rule_ext *ruleext,
 		}
 		default:
 fallback:
-			if (cls->common.skip_sw) {
+			if (yt921x_cls_skip_sw(cls)) {
 				NL_SET_ERR_MSG_FMT_MOD(extack,
 						       "Action not supported when skip_sw: %s",
 						       reason);
@@ -2179,7 +2194,7 @@ fallback:
 			break;
 		}
 
-	ruleext->r.sw_assisted = !cls->common.skip_sw;
+	ruleext->r.sw_assisted = !yt921x_cls_skip_sw(cls);
 	return 0;
 }
 
