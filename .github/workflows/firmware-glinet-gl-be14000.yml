@@ -1,0 +1,290 @@
+name: Build GL.iNet GL-BE14000 (Flint 4)
+# Builds mediatek/filogic images for the GL.iNet GL-BE14000 (Flint 4) from this
+# branch: OpenWrt main plus John Crispin's (blogic) GL-BE14000 series -
+# Motorcomm YT92xx DSA driver, RTL8261C/D 10G PHY, panel/touch bits and the
+# U-Boot/ATF board variants - cherry-picked from https://github.com/blogic/openwrt.
+#
+# Only the stock-bootloader device (glinet_gl-be14000) is built. The
+# glinet_gl-be14000-ubootmod variant exists in the tree but replaces the
+# bootchain in mmcblk0boot0 and the fip partition, so it is left out of the
+# release on purpose.
+#
+# Runs only on tag pushes (or manual dispatch) - never on ordinary pushes to
+# the branch: the upstream kernel/packages/toolchain/tools/push-containers
+# workflows are excluded for this branch in the same commit that adds this
+# file, so nothing else here reacts to a push either. Every run publishes its
+# images as a GitHub release.
+#
+# The tag pattern is deliberately not 'v*': the stock github-release.yml
+# inherited from upstream fires on 'v*' and would race this workflow for the
+# same release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      verbose:
+        description: "Verbose make (V=s)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  push:
+    tags:
+      - 'gl-be14000-*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEVICE: glinet_gl-be14000
+  TARGET_DIR: bin/targets/mediatek/filogic
+
+jobs:
+  build:
+    name: mediatek/filogic glinet_gl-be14000
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Maximize build space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/share/swift || true
+          sudo docker image prune --all --force || true
+          sudo apt-get clean || true
+          df -h
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses-dev libssl-dev python3-setuptools \
+            python3-dev python3 rsync swig unzip zlib1g-dev file wget zstd ccache \
+            ecj fastjar java-propose-classpath libelf-dev libncursesw5-dev \
+            libdw-dev liblz4-dev libzstd-dev libxml-parser-perl
+
+      - name: Assert the GL-BE14000 support is in the tree
+        # Cheap source-level check before the expensive part: this branch is
+        # only worth building if the whole cherry-picked series is present.
+        run: |
+          fail=0
+          chk() { [ -e "$1" ] || { echo "::error::missing $1"; fail=1; }; }
+          chk target/linux/mediatek/dts/mt7988a-glinet-gl-be14000.dts
+          chk target/linux/generic/pending-6.18/743-net-phy-realtek-add-support-for-rtl8261c.patch
+          chk target/linux/mediatek/patches-6.18/967-27-net-dsa-yt92xx-Add-support-for-Motorcomm-YT922x.patch
+          grep -q '^define Device/glinet_gl-be14000$' target/linux/mediatek/image/filogic.mk \
+            || { echo "::error::filogic.mk has no Device/glinet_gl-be14000"; fail=1; }
+          grep -q 'glinet,gl-be14000' target/linux/mediatek/filogic/base-files/etc/board.d/02_network \
+            || { echo "::error::02_network has no glinet,gl-be14000 entry"; fail=1; }
+          for sym in CONFIG_NET_DSA_YT92XX CONFIG_NET_DSA_TAG_YT92XX CONFIG_MOTORCOMM_PHY; do
+            grep -qx "$sym=y" target/linux/mediatek/filogic/config-6.18 \
+              || { echo "::error::$sym=y missing from filogic config-6.18"; fail=1; }
+          done
+          [ "$fail" = 0 ] || exit 1
+          echo "GL-BE14000 series present"
+
+      - name: Update feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure build (GL-BE14000, stock bootloader, LuCI)
+        run: |
+          {
+            echo 'CONFIG_TARGET_mediatek=y'
+            echo 'CONFIG_TARGET_mediatek_filogic=y'
+            echo "CONFIG_TARGET_mediatek_filogic_DEVICE_${DEVICE}=y"
+            echo 'CONFIG_PACKAGE_luci=y'
+            echo 'CONFIG_BUILD_LOG=y'
+          } > .config
+          make defconfig
+
+          echo "----- selected target/device -----"
+          grep -E '^CONFIG_TARGET_(BOARD|SUBTARGET|ARCH_PACKAGES)' .config || true
+          grep -E 'be14000' .config || true
+
+          # `make defconfig` is free to drop anything it considers unreachable,
+          # so check the device survived before spending hours on a build that
+          # would produce no image at all.
+          grep -qE "^CONFIG_TARGET(_DEVICE)?_mediatek_filogic_DEVICE_${DEVICE}=y" .config \
+            || { echo "::error::${DEVICE} is not selected after defconfig"; exit 1; }
+          # LuCI comes from the luci feed, so it only survives defconfig once
+          # the feeds are installed. If it silently dropped out the image would
+          # ship without a web UI and nothing else here would notice.
+          grep -qx 'CONFIG_PACKAGE_luci=y' .config \
+            || { echo "::error::CONFIG_PACKAGE_luci did not survive defconfig - is the luci feed installed?"; exit 1; }
+          echo "device selected, LuCI included"
+
+      - name: Download sources
+        run: make download -j8
+
+      - name: Build tools
+        run: |
+          make tools/install -j$(nproc) \
+            ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
+            make tools/install -j1 V=s
+
+      - name: Build toolchain
+        run: |
+          make toolchain/install -j$(nproc) \
+            ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
+            make toolchain/install -j1 V=s
+
+      - name: Build firmware
+        run: |
+          make -j$(nproc) \
+            ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
+            make -j1 V=s
+
+      - name: Verify the switch and PHY drivers really went into the kernel
+        # The YT9224 switch, the RTL8261D WAN PHY and the board DTB are what
+        # make this image different from a stock filogic build. Check the
+        # kernel .config and the compiled DTB so a config that silently lost
+        # them cannot ship as a working Flint 4 image.
+        run: |
+          fail=0
+          KCFG=$(find build_dir -path '*linux-mediatek_filogic/linux-6.18*' -maxdepth 4 -name '.config' 2>/dev/null | head -1)
+          if [ -z "$KCFG" ]; then
+            echo "::error::kernel .config not found in build_dir"
+            fail=1
+          else
+            echo "kernel config: $KCFG"
+            for sym in CONFIG_NET_DSA_YT92XX CONFIG_NET_DSA_TAG_YT92XX CONFIG_MOTORCOMM_PHY CONFIG_REALTEK_PHY; do
+              grep -qx "$sym=y" "$KCFG" \
+                || { echo "::error::$sym is not built into the kernel"; fail=1; }
+            done
+          fi
+
+          KDTB=$(find build_dir -name 'image-mt7988a-glinet-gl-be14000.dtb' 2>/dev/null | head -1)
+          if [ -z "$KDTB" ]; then
+            echo "::error::kernel DTB image-mt7988a-glinet-gl-be14000.dtb not found in build_dir"
+            fail=1
+          else
+            echo "kernel DTB: $KDTB"
+            strings "$KDTB" | grep -qx 'motorcomm,yt9224' \
+              || { echo "::error::DTB has no motorcomm,yt9224 switch node"; fail=1; }
+            strings "$KDTB" | grep -qx 'glinet,gl-be14000' \
+              || { echo "::error::DTB compatible is not glinet,gl-be14000"; fail=1; }
+          fi
+
+          [ "$fail" = 0 ] || exit 1
+          echo "drivers and DTB verified"
+
+      - name: List output
+        if: always()
+        run: |
+          echo "----- ${TARGET_DIR} -----"
+          ls -lh "${TARGET_DIR}/" || true
+          df -h
+
+      - name: Collect artifacts
+        if: success()
+        run: |
+          mkdir -p artifacts
+          cp -v "${TARGET_DIR}"/*gl-be14000* artifacts/ 2>/dev/null || true
+          cp -v "${TARGET_DIR}"/sha256sums artifacts/ 2>/dev/null || true
+          cp -v "${TARGET_DIR}"/profiles.json artifacts/ 2>/dev/null || true
+          cp -v .config artifacts/build.config 2>/dev/null || true
+          ls -lh artifacts/
+          ls artifacts/ | grep -q "${DEVICE}-squashfs-sysupgrade.bin" \
+            || { echo "::error::no sysupgrade image was produced"; exit 1; }
+          ls artifacts/ | grep -q "${DEVICE}-squashfs-factory.bin" \
+            || { echo "::error::no factory image was produced"; exit 1; }
+
+      - name: Upload firmware artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: glinet-gl-be14000-${{ github.ref_name }}
+          path: artifacts/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('gl-be14000-build-{0}', github.run_number) }}
+          name: GL.iNet Flint 4 (GL-BE14000) snapshot (${{ github.ref_name }})
+          files: artifacts/*
+          body: |
+            OpenWrt **snapshot** build for the **GL.iNet Flint 4 (GL-BE14000)**, MediaTek
+            MT7988A, eMMC, MT7996 Wi-Fi 7.
+
+            Built from `${{ github.sha }}`, branch `main-glinet-gl-be14000`: OpenWrt
+            `main` (kernel 6.18) plus John Crispin's (blogic) GL-BE14000 series
+            cherry-picked from https://github.com/blogic/openwrt - the Motorcomm YT92xx
+            DSA driver, the RTL8261C/D 10G PHY driver, the front panel / touch bits and
+            the GL-BE14000 board itself. This series is **not merged upstream yet**.
+
+            ### Known issues - read before flashing
+
+            * **The four 2.5GbE ports (`lan1`-`lan4`) do not work yet.** They hang off
+              the Motorcomm YT9224 switch, and its integrated PHYs (ID `0x4f51e899`)
+              have no driver in the kernel so far. They fail to probe at boot - the
+              related errors in `dmesg` are expected - and stay dead until a driver
+              lands. Use the 10G WAN port, the SFP+ cage or the 1GbE ports
+              `lan5`-`lan8` (MT7988 built-in switch) in the meantime.
+            * Snapshot base: package feeds move daily, so `opkg`/`apk` installs may
+              not match this build after a while. Everything you need should be in
+              the image already.
+            * The front LCD splash from the bootloader needs the U-Boot mod, which
+              this release does not ship (see below).
+
+            ### What is in the image
+
+            * Stock upstream defaults for the board (`lan1`-`lan8` + `sfp` in the LAN
+              bridge, `wan` = the 10G RJ45 port as DHCP client), Wi-Fi off until
+              configured.
+            * **LuCI** (`CONFIG_PACKAGE_luci=y`) - reachable at http://192.168.1.1
+              after boot.
+            * Firmware for MT7996 Wi-Fi, the RTL8261D 10G PHY and the panel, plus
+              USB 3, PWM fan, touch and backlight drivers as selected by the board.
+
+            ### Files
+
+            * `*-squashfs-factory.bin` - **first install** from the GL.iNet vendor
+              firmware / U-Boot.
+            * `*-squashfs-sysupgrade.bin` - upgrades from an OpenWrt build of this
+              board (LuCI > System > Backup/Flash Firmware, or `sysupgrade`).
+            * `*-initramfs-kernel.bin` - RAM-only image for recovery/testing, if
+              present.
+            * `sha256sums`, `profiles.json`, `build.config` - checksums, the image
+              metadata and the exact `.config` used.
+
+            ### Installing
+
+            The vendor U-Boot loads OpenWrt from the `kernel` GPT partition and
+            roots on the `rootfs` partition, so the **bootloader is left alone** and
+            the vendor eMMC layout is reused. Flash `*-squashfs-factory.bin` either
+            from the GL.iNet U-Boot web recovery (hold reset while powering on, then
+            open http://192.168.1.1) or with `mtkupgrade fw` from the U-Boot serial
+            console. Afterwards use the sysupgrade image for updates.
+
+            The tree also carries a `glinet_gl-be14000-ubootmod` variant that replaces
+            the bootchain in `mmcblk0boot0` and the `fip` partition with an OpenWrt
+            BL2/U-Boot (that is what draws the splash on the panel). It is
+            deliberately **not built** here - going back to the vendor bootloader is
+            not a one-click operation.
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.ref_name }}
+          path: |
+            logs/
+            .config
+          retention-days: 14
+          if-no-files-found: ignore

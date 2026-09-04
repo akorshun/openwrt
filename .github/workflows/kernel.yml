@@ -19,6 +19,7 @@ on:
       - 'target/linux/**'
     branches-ignore:
       - master
+      - main-glinet-gl-be14000
   workflow_dispatch:
 
 permissions:
