@@ -116,7 +116,14 @@ jobs:
 
       - name: Update feeds
         run: |
-          ./scripts/feeds update -a
+          # git.openwrt.org answers 504 now and then; a failed clone leaves
+          # a half-empty feed behind, so retry the update from scratch.
+          for i in 1 2 3 4; do
+            ./scripts/feeds update -a && break
+            echo "feeds update failed (attempt $i), retrying"
+            rm -rf feeds
+            sleep 30
+          done
           ./scripts/feeds install -a
 
       - name: Configure build (official 25.12.5 config, GL-BE14000 only)

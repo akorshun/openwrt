@@ -95,7 +95,14 @@ jobs:
         shell: su buildbot -c "sh -e {0}"
         working-directory: openwrt
         run: |
-          ./scripts/feeds update -a
+          # git.openwrt.org answers 504 now and then; a failed clone leaves
+          # a half-empty feed behind, so retry the update from scratch.
+          for i in 1 2 3 4; do
+            ./scripts/feeds update -a && break
+            echo "feeds update failed (attempt $i), retrying"
+            rm -rf feeds
+            sleep 30
+          done
           ./scripts/feeds install -a
 
       - name: Configure external toolchain and the board
