@@ -1,0 +1,357 @@
+name: Build GL.iNet GL-BE14000 (Flint 4) 25.12.5
+# Builds mediatek/filogic images for the GL.iNet GL-BE14000 (Flint 4) from
+# this branch: OpenWrt 25.12.5 plus the board support ported from John
+# Crispin's (blogic) GL-BE14000 series - the board itself, the RTL8261C/D-CG
+# 10G PHY driver ported to 6.12, and the Motorcomm YT921x switch driver built
+# out of tree.
+#
+# The kernel config is seeded from the official 25.12.5 config.buildinfo and
+# nothing on this branch adds a CONFIG_ symbol, so the computed vermagic must
+# come out identical to the published one. It is asserted, never forced: a
+# mismatch fails the run before the packages are built, because an image whose
+# distfeeds.list points at a kmods feed it cannot use is worse than no image.
+#
+# Runs only on tag pushes (or manual dispatch) - never on ordinary pushes to
+# the branch: the upstream kernel/packages/toolchain/tools/push-containers
+# workflows have this branch in branches-ignore. Every run publishes its
+# images as a GitHub release.
+#
+# The tag pattern is deliberately not 'v*': the stock github-release.yml
+# inherited from upstream fires on 'v*' and would race this workflow for the
+# same release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      verbose:
+        description: "Verbose make (V=s)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  push:
+    tags:
+      - 'gl-be14000-25.12.5-*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEVICE: glinet_gl-be14000
+  TARGET_DIR: bin/targets/mediatek/filogic
+  # Published in targets/mediatek/filogic/kmods/ for 25.12.5. The build must
+  # arrive at this value on its own; see the vermagic step below.
+  EXPECTED_KERNEL: 6.12.94-1
+  EXPECTED_VERMAGIC: 5a6c1f71be683ae9980b15d3ce73e24d
+
+jobs:
+  build:
+    name: mediatek/filogic glinet_gl-be14000 (25.12.5)
+    runs-on: ubuntu-24.04
+    # GitHub-hosted runners hard-stop at 6 h. CONFIG_ALL_KMODS=y plus the
+    # debug info the official config collects is what pushes this past 3 h.
+    timeout-minutes: 350
+
+    steps:
+      - name: Maximize build space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/share/swift || true
+          sudo docker image prune --all --force || true
+          sudo apt-get clean || true
+          df -h
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses-dev libssl-dev python3-setuptools \
+            python3-dev python3 rsync swig unzip zlib1g-dev file wget zstd ccache \
+            ecj fastjar java-propose-classpath libelf-dev libncursesw5-dev \
+            libdw-dev liblz4-dev libzstd-dev libxml-parser-perl
+
+      - name: Assert the GL-BE14000 support is in the tree
+        # Cheap source-level check before the expensive part.
+        run: |
+          fail=0
+          chk() { [ -e "$1" ] || { echo "::error::missing $1"; fail=1; }; }
+          chk target/linux/mediatek/dts/mt7988a-glinet-gl-be14000.dts
+          chk target/linux/mediatek/patches-6.12/742-net-phy-realtek-add-5G-and-10G-PHY-support.patch
+          chk target/linux/mediatek/patches-6.12/743-net-phy-realtek-add-support-for-rtl8261c.patch
+          chk package/kernel/dsa-yt921x/src/yt921x.c
+          chk package/firmware/rtl8261c-firmware/files/rtl8261c.bin
+          chk target/linux/mediatek/filogic/base-files/etc/apk/repositories.d/distfeeds.list
+          grep -q '^define Device/glinet_gl-be14000$' target/linux/mediatek/image/filogic.mk \
+            || { echo "::error::filogic.mk has no Device/glinet_gl-be14000"; fail=1; }
+          grep -q 'glinet,gl-be14000' target/linux/mediatek/filogic/base-files/etc/board.d/02_network \
+            || { echo "::error::02_network has no glinet,gl-be14000 entry"; fail=1; }
+          # This branch must not touch the kernel config: that is what keeps
+          # the vermagic equal to the official one.
+          if git diff --quiet v25.12.5 HEAD -- target/linux/mediatek/filogic/config-6.12 target/linux/generic/config-6.12 2>/dev/null; then
+            echo "kernel config untouched since v25.12.5"
+          else
+            echo "::error::kernel config differs from v25.12.5 - the vermagic will not match"; fail=1
+          fi
+          [ "$fail" = 0 ] || exit 1
+          echo "GL-BE14000 support present"
+
+      - name: Update feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure build (official 25.12.5 config, GL-BE14000 only)
+        run: |
+          cp .github/workflows/config/glinet-gl-be14000.config .config
+          echo 'CONFIG_BUILD_LOG=y' >> .config
+          make defconfig
+
+          echo "----- selected target/device -----"
+          grep -E '^CONFIG_TARGET_(BOARD|SUBTARGET|ARCH_PACKAGES)' .config || true
+          grep -E 'be14000' .config || true
+
+          fail=0
+          grep -qE "^CONFIG_TARGET(_DEVICE)?_mediatek_filogic_DEVICE_${DEVICE}=y" .config \
+            || { echo "::error::${DEVICE} is not selected after defconfig"; fail=1; }
+          grep -qx 'CONFIG_ALL_KMODS=y' .config || { echo "::error::CONFIG_ALL_KMODS lost"; fail=1; }
+          grep -qx 'CONFIG_PACKAGE_luci=y' .config \
+            || { echo "::error::CONFIG_PACKAGE_luci did not survive defconfig - is the luci feed installed?"; fail=1; }
+          grep -qx 'CONFIG_PACKAGE_kmod-dsa-yt921x=m' .config \
+            || { echo "::error::kmod-dsa-yt921x is not selected"; fail=1; }
+
+          # include/kernel-defaults.mk copies every CONFIG_KERNEL_* symbol into
+          # the kernel config, so each one is part of the ABI the official
+          # kmods were built against. config.buildinfo is a diffconfig -
+          # anything it states must be present verbatim here.
+          curl -fsSL --retry 3 -o /tmp/config.buildinfo \
+            "https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/config.buildinfo"
+          { grep -E '^(# )?CONFIG_KERNEL_' /tmp/config.buildinfo \
+            | grep -vE 'CONFIG_KERNEL_BUILD_(USER|DOMAIN)' || true; } > /tmp/kernel-opts.want
+          echo "official CONFIG_KERNEL_* deviations:"
+          cat /tmp/kernel-opts.want
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            grep -qxF -- "$line" .config \
+              || { echo "::error::official kernel option not in our .config: $line"; fail=1; }
+          done < /tmp/kernel-opts.want
+          [ "$fail" = 0 ] || exit 1
+          echo "device selected, LuCI included, kernel options match the buildbot"
+
+      - name: Download sources
+        run: make download -j8
+
+      - name: Build tools
+        run: |
+          make tools/install -j$(nproc) \
+            ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
+            make tools/install -j1 V=s
+
+      - name: Build toolchain
+        run: |
+          make toolchain/install -j$(nproc) \
+            ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
+            make toolchain/install -j1 V=s
+
+      - name: Build kernel and modules
+        # No -j1 V=s retry here: with CONFIG_ALL_KMODS=y a serial rebuild of
+        # every module would blow the job timeout; the build log is uploaded
+        # on failure instead.
+        run: make target/linux/compile -j$(nproc) ${{ inputs.verbose == 'true' && 'V=s' || '' }}
+
+      - name: Assert vermagic matches the published 25.12.5 feed
+        # The kernel is configured and built by now, which is the first point
+        # at which .vermagic exists - a mismatch means the remaining hours
+        # would produce an image whose distfeeds.list points at a kmods feed
+        # it cannot use.
+        run: |
+          VM=$(find build_dir -name '.vermagic' 2>/dev/null | head -1)
+          [ -n "$VM" ] || { echo "::error::no .vermagic found in build_dir"; exit 1; }
+          ACTUAL=$(cat "$VM")
+          echo "computed vermagic: $ACTUAL"
+          echo "expected vermagic: $EXPECTED_VERMAGIC"
+          if [ "$ACTUAL" != "$EXPECTED_VERMAGIC" ]; then
+            echo "::error::vermagic is $ACTUAL, expected $EXPECTED_VERMAGIC"
+            echo "The kernel config drifted from the official one; compare against"
+            echo "https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/config.buildinfo"
+            exit 1
+          fi
+          echo "vermagic OK"
+
+      - name: Build firmware
+        run: make -j$(nproc) ${{ inputs.verbose == 'true' && 'V=s' || '' }}
+
+      - name: Verify the switch driver and the board DTB
+        run: |
+          fail=0
+          for m in yt921x tag_yt921x; do
+            f=$(find build_dir/target-*/dsa-yt921x -name "$m.ko" 2>/dev/null | head -1)
+            [ -n "$f" ] || { echo "::error::$m.ko was not built"; fail=1; }
+          done
+          KDTB=$(find build_dir -name 'image-mt7988a-glinet-gl-be14000.dtb' 2>/dev/null | head -1)
+          if [ -z "$KDTB" ]; then
+            echo "::error::kernel DTB image-mt7988a-glinet-gl-be14000.dtb not found"
+            fail=1
+          else
+            strings "$KDTB" | grep -qx 'motorcomm,yt9224' \
+              || { echo "::error::DTB has no motorcomm,yt9224 switch node"; fail=1; }
+          fi
+          MAN=$(find "${TARGET_DIR}" -name "*${DEVICE}.manifest" 2>/dev/null | head -1)
+          if [ -n "$MAN" ]; then
+            for p in kmod-dsa-yt921x rtl8261c-firmware kmod-mt7996-233-firmware luci; do
+              grep -q "^$p " "$MAN" || { echo "::error::$p missing from the image manifest"; fail=1; }
+            done
+          else
+            echo "::warning::no manifest found under ${TARGET_DIR}"
+          fi
+          [ "$fail" = 0 ] || exit 1
+          echo "switch driver, DTB and manifest OK"
+
+      - name: Verify the shipped kmods feed line
+        run: |
+          DF=$(find build_dir -path '*/etc/apk/repositories.d/distfeeds.list' 2>/dev/null | head -1)
+          [ -n "$DF" ] || { echo "::error::generated distfeeds.list not found"; exit 1; }
+          echo "----- generated distfeeds.list -----"
+          cat "$DF"
+          # The static line ships a hardcoded kernel version and vermagic;
+          # keep it honest.
+          WANT="/targets/mediatek/filogic/kmods/${EXPECTED_KERNEL}-${EXPECTED_VERMAGIC}/packages.adb"
+          grep -qF "$WANT" "$DF" || { echo "::error::distfeeds.list does not carry $WANT"; exit 1; }
+          echo "kmods feed line OK"
+
+      - name: List output
+        if: always()
+        run: |
+          echo "----- ${TARGET_DIR} -----"
+          ls -lh "${TARGET_DIR}/" || true
+          df -h
+
+      - name: Collect artifacts
+        if: success()
+        run: |
+          mkdir -p artifacts
+          cp -v "${TARGET_DIR}"/*gl-be14000* artifacts/ 2>/dev/null || true
+          cp -v "${TARGET_DIR}"/sha256sums artifacts/ 2>/dev/null || true
+          cp -v "${TARGET_DIR}"/profiles.json artifacts/ 2>/dev/null || true
+          cp -v .config artifacts/build.config 2>/dev/null || true
+          # CONFIG_ALL_KMODS=y means this build produced the whole kmods feed
+          # itself. Ship it: same source, same config, same vermagic, usable
+          # offline, and it is the only place kmod-dsa-yt921x exists.
+          KDIR=$(find "${TARGET_DIR}"/kmods -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
+          if [ -n "$KDIR" ]; then
+            tar -czf "artifacts/kmods-$(basename "$KDIR").tar.gz" -C "$KDIR" .
+          else
+            echo "::warning::no kmods directory found under ${TARGET_DIR}"
+          fi
+          ls -lh artifacts/
+          ls artifacts/ | grep -q "${DEVICE}-squashfs-sysupgrade.bin" \
+            || { echo "::error::no sysupgrade image was produced"; exit 1; }
+          ls artifacts/ | grep -q "${DEVICE}-squashfs-factory.bin" \
+            || { echo "::error::no factory image was produced"; exit 1; }
+
+      - name: Upload firmware artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: glinet-gl-be14000-25.12.5-${{ github.ref_name }}
+          path: artifacts/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('gl-be14000-25.12.5-build-{0}', github.run_number) }}
+          name: GL.iNet Flint 4 (GL-BE14000) 25.12.5 (${{ github.ref_name }})
+          files: artifacts/*
+          body: |
+            OpenWrt **25.12.5** build for the **GL.iNet Flint 4 (GL-BE14000)**, MediaTek
+            MT7988A, eMMC, MT7996 Wi-Fi 7.
+
+            Built from `${{ github.sha }}`, branch `openwrt-25.12-glinet-gl-be14000`:
+            the `v25.12.5` tag plus the board support ported from John Crispin's
+            (blogic) GL-BE14000 series on OpenWrt main. Same feature set as the
+            snapshot build of this board, on the stable kernel (6.12) and package
+            set of 25.12.5.
+
+            ### Known issues - read before flashing
+
+            * **The four 2.5GbE ports (`lan1`-`lan4`) do not work yet.** They hang off
+              the Motorcomm YT9224 switch, and its integrated PHYs (ID `0x4f51e899`)
+              have no driver in the kernel so far - not here and not on main. They
+              fail to probe at boot (the related errors in `dmesg` are expected) and
+              stay dead until a driver lands. Use the 10G WAN port or the 1GbE ports
+              `lan5`-`lan8` (MT7988 built-in switch) in the meantime. The SFP+ cage
+              (`sfp`) sits on the same YT9224 switch, so treat it as untested until
+              someone confirms it.
+            * The front LCD is not driven: the panel and touch stack needs the
+              `display` target feature and DRM kernel modules that the official
+              25.12.5 filogic kernel does not have, and enabling them would break
+              the kmod compatibility below.
+
+            ### Official kmods work on this image
+
+            The kernel config is seeded from the official 25.12.5 `config.buildinfo`
+            and this branch adds no kernel config symbol at all, so the computed
+            vermagic is the published `${{ env.EXPECTED_KERNEL }}-${{ env.EXPECTED_VERMAGIC }}`
+            - asserted by the build, never forced. `/etc/apk/repositories.d/distfeeds.list`
+            carries the matching kmods feed line, so `apk add kmod-*` (and LuCI's
+            package manager) pulls kernel modules straight from
+            downloads.openwrt.org like on an official image. `kmods-*.tar.gz` in
+            this release is the same feed as built here, for offline use - and the
+            only place `kmod-dsa-yt921x` (the YT9224 switch driver, built out of
+            tree) exists.
+
+            ### What is in the image
+
+            * Stock defaults for the board (`lan1`-`lan8` + `sfp` in the LAN bridge,
+              `wan` = the 10G RJ45 port as DHCP client), Wi-Fi off until configured.
+            * **LuCI** (with `luci-ssl`, attended sysupgrade and the package
+              manager, as on the official 25.12.5 images) - http://192.168.1.1.
+            * RTL8261D-CG 10G PHY driver with its `rtl8261c.bin` patch firmware,
+              MT7996 Wi-Fi firmware, WED offload firmware, the YT9224 switch driver,
+              USB 3, PWM fan, SFP support.
+
+            ### Files
+
+            * `*-squashfs-factory.bin` - **first install** from the GL.iNet vendor
+              firmware / U-Boot.
+            * `*-squashfs-sysupgrade.bin` - upgrades from an OpenWrt build of this
+              board (LuCI > System > Backup/Flash Firmware, or `sysupgrade`).
+            * `*-initramfs-kernel.bin` - RAM-only image for recovery/testing, if
+              present.
+            * `kmods-${{ env.EXPECTED_KERNEL }}-${{ env.EXPECTED_VERMAGIC }}.tar.gz` -
+              the complete kmods feed built alongside.
+            * `sha256sums`, `profiles.json`, `build.config` - checksums, the image
+              metadata and the exact `.config` used.
+
+            ### Installing
+
+            The vendor U-Boot loads OpenWrt from the `kernel` GPT partition and
+            roots on the `rootfs` partition, so the **bootloader is left alone** and
+            the vendor eMMC layout is reused. Flash `*-squashfs-factory.bin` either
+            from the GL.iNet U-Boot web recovery (hold reset while powering on, then
+            open http://192.168.1.1) or with `mtkupgrade fw` from the U-Boot serial
+            console. Afterwards use the sysupgrade image for updates.
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.ref_name }}
+          path: |
+            logs/
+            .config
+          retention-days: 14
+          if-no-files-found: ignore
