@@ -1602,7 +1602,8 @@ define Device/glinet_gl-be14000
   DEVICE_DTS_DIR := ../dts
   DEVICE_DTS_LOADADDR := 0x45f00000
   KERNEL_LOADADDR := 0x46000000
-  DEVICE_PACKAGES := kmod-mt7996-233-firmware mt7988-wo-firmware kmod-hwmon-pwmfan \n	kmod-usb3 kmod-sfp kmod-dsa-yt921x rtl8261c-firmware e2fsprogs f2fsck mkf2fs
+  DEVICE_PACKAGES := kmod-mt7996-233-firmware mt7988-wo-firmware kmod-hwmon-pwmfan \
+	kmod-usb3 kmod-sfp kmod-dsa-yt921x rtl8261c-firmware e2fsprogs f2fsck mkf2fs
   IMAGES := sysupgrade.bin factory.bin
   IMAGE/factory.bin := append-kernel | pad-to 32M | append-rootfs
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
