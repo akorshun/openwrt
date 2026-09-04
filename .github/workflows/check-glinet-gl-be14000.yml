@@ -1,0 +1,142 @@
+name: Check GL-BE14000 kernel + kmods (25.12)
+# Fast compile check for the GL.iNet GL-BE14000 (Flint 4) branch on 25.12:
+# builds the kernel, the board DTB and the out-of-tree kmods against the
+# prebuilt 25.12 filogic toolchain container that OpenWrt's own CI uses,
+# and asserts the vermagic still equals the published 25.12.5 one. Takes
+# well under an hour, versus 5+ hours for the full release build, so the
+# realtek and yt921x ports can be iterated on cheaply.
+#
+# Manual dispatch only. Publishes nothing.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  EXPECTED_KERNEL: 6.12.94-1
+  EXPECTED_VERMAGIC: 5a6c1f71be683ae9980b15d3ce73e24d
+
+jobs:
+  check:
+    name: mediatek/filogic kernel + dsa-yt921x
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ghcr.io/openwrt/toolchain:mediatek-filogic-openwrt-25.12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: openwrt
+
+      - name: Fix permission
+        run: chown -R buildbot:buildbot openwrt
+
+      - name: Prepare prebuilt tools
+        shell: su buildbot -c "sh -e {0}"
+        working-directory: openwrt
+        run: |
+          mkdir -p staging_dir build_dir
+          ln -s /prebuilt_tools/staging_dir/host staging_dir/host
+          ln -s /prebuilt_tools/build_dir/host build_dir/host
+          ./scripts/ext-tools.sh --refresh
+
+      - name: Configure external toolchain and the board
+        shell: su buildbot -c "sh -e {0}"
+        working-directory: openwrt
+        run: |
+          rm -f .config
+          ./scripts/ext-toolchain.sh \
+            --toolchain /external-toolchain/$(ls /external-toolchain/ | grep openwrt-toolchain)/toolchain-* \
+            --overwrite-config \
+            --config mediatek/filogic
+          # Same seed as the release build, so the kernel config - and the
+          # vermagic - is the one the release will have.
+          cat .github/workflows/config/glinet-gl-be14000.config >> .config
+          make defconfig
+          grep -qE '^CONFIG_TARGET(_DEVICE)?_mediatek_filogic_DEVICE_glinet_gl-be14000=y' .config \
+            || { echo "::error::glinet_gl-be14000 is not selected after defconfig"; exit 1; }
+          grep -qx 'CONFIG_ALL_KMODS=y' .config || { echo "::error::CONFIG_ALL_KMODS lost"; exit 1; }
+          grep -qx 'CONFIG_PACKAGE_kmod-dsa-yt921x=m' .config \
+            || { echo "::error::kmod-dsa-yt921x is not selected - is package/kernel/dsa-yt921x visible?"; exit 1; }
+          echo "config OK"
+
+      - name: Download kernel sources
+        shell: su buildbot -c "sh -e {0}"
+        working-directory: openwrt
+        run: make target/linux/download -j$(nproc)
+
+      - name: Build kernel and in-tree modules
+        shell: su buildbot -c "sh -e {0}"
+        working-directory: openwrt
+        run: make target/linux/compile -j$(nproc) BUILD_LOG=1 || ret=$? .github/workflows/scripts/show_build_failures.sh
+
+      - name: Assert vermagic matches the published 25.12.5 feed
+        shell: su buildbot -c "sh -e {0}"
+        working-directory: openwrt
+        run: |
+          VM=$(find build_dir -name '.vermagic' 2>/dev/null | head -1)
+          [ -n "$VM" ] || { echo "::error::no .vermagic found in build_dir"; exit 1; }
+          ACTUAL=$(cat "$VM")
+          echo "computed vermagic: $ACTUAL"
+          echo "expected vermagic: $EXPECTED_VERMAGIC"
+          if [ "$ACTUAL" != "$EXPECTED_VERMAGIC" ]; then
+            echo "::error::vermagic is $ACTUAL, expected $EXPECTED_VERMAGIC - the kernel config drifted from the official 25.12.5 one"
+            KCFG=$(find build_dir -path '*linux-mediatek_filogic/linux-6.12*' -maxdepth 4 -name '.config' | head -1)
+            [ -n "$KCFG" ] && grep -E '=[ym]$' "$KCFG" | LC_ALL=C sort > /tmp/kernel-ym.txt && wc -l /tmp/kernel-ym.txt
+            exit 1
+          fi
+          echo "vermagic OK"
+
+      - name: Build the board DTB
+        shell: su buildbot -c "sh -e {0}"
+        working-directory: openwrt
+        run: |
+          make target/linux/dtb -j$(nproc) BUILD_LOG=1 || ret=$? .github/workflows/scripts/show_build_failures.sh
+          KDTB=$(find build_dir -name 'image-mt7988a-glinet-gl-be14000.dtb' 2>/dev/null | head -1)
+          [ -n "$KDTB" ] || { echo "::error::image-mt7988a-glinet-gl-be14000.dtb was not produced"; exit 1; }
+          strings "$KDTB" | grep -qx 'motorcomm,yt9224' || { echo "::error::DTB has no motorcomm,yt9224 node"; exit 1; }
+          echo "DTB OK: $KDTB"
+
+      - name: Build the out-of-tree kmods and firmware
+        shell: su buildbot -c "sh -e {0}"
+        working-directory: openwrt
+        run: |
+          make package/kernel/dsa-yt921x/compile -j$(nproc) BUILD_LOG=1 V=sc || ret=$? .github/workflows/scripts/show_build_failures.sh
+          make package/firmware/rtl8261c-firmware/compile -j$(nproc) BUILD_LOG=1 || ret=$? .github/workflows/scripts/show_build_failures.sh
+          ls -l build_dir/target-*/dsa-yt921x/*.ko
+          for m in yt921x tag_yt921x; do
+            f=$(find build_dir/target-*/dsa-yt921x -name "$m.ko" | head -1)
+            [ -n "$f" ] || { echo "::error::$m.ko was not built"; exit 1; }
+            staging_dir/toolchain-*/bin/*-readelf -p .modinfo "$f" 2>/dev/null | grep -E 'vermagic|alias' || true
+          done
+
+      - name: Check the realtek driver got the RTL8261C/D entry
+        shell: su buildbot -c "sh -e {0}"
+        working-directory: openwrt
+        run: |
+          SRC=$(find build_dir -path '*linux-mediatek_filogic/linux-6.12*/drivers/net/phy/realtek/realtek_main.c' | head -1)
+          [ -n "$SRC" ] || { echo "::error::patched realtek_main.c not found"; exit 1; }
+          grep -q 'RTL8261C/D-CG 10Gbps PHY' "$SRC" || { echo "::error::RTL8261C/D-CG entry missing from realtek_main.c"; exit 1; }
+          KO=$(find build_dir -name 'realtek.ko' | head -1)
+          OBJ=$(find build_dir -path '*linux-mediatek_filogic/linux-6.12*/drivers/net/phy/realtek/realtek_main.o' | head -1)
+          echo "realtek objects: ${KO:-built-in} ${OBJ}"
+          echo "realtek OK"
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-logs-${{ github.run_number }}
+          path: |
+            openwrt/logs/
+            openwrt/.config
+          retention-days: 7
+          if-no-files-found: ignore

@@ -19,6 +19,7 @@ on:
       - 'target/linux/**'
     branches-ignore:
       - master
+      - openwrt-25.12-glinet-gl-be14000
 
 permissions:
   contents: read
