@@ -51,8 +51,11 @@ jobs:
           - name: branch
             ref: ${{ github.sha }}
             device: glinet_gl-be14000
+          # v25.12.5 by commit: the fork does not carry every upstream tag,
+          # and actions/checkout can fetch any commit reachable from the
+          # branch that triggered the run.
           - name: reference
-            ref: v25.12.5
+            ref: f0a60eee2fe051741c643ea6118718aae1ef17fb
             device: bananapi_bpi-r4
 
     steps:
@@ -70,7 +73,11 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Fix permission
-        run: chown -R buildbot:buildbot openwrt seed
+        # The workspace root belongs to root; the build runs as buildbot and
+        # needs the tree plus a place next to it for the exported config.
+        run: |
+          mkdir -p kcfg
+          chown -R buildbot:buildbot openwrt seed kcfg
 
       - name: Prepare prebuilt tools
         shell: su buildbot -c "sh -e {0}"

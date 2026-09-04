@@ -97,17 +97,19 @@ jobs:
           grep -q 'glinet,gl-be14000' target/linux/mediatek/filogic/base-files/etc/board.d/02_network \
             || { echo "::error::02_network has no glinet,gl-be14000 entry"; fail=1; }
           # This branch must not touch the kernel config: that is what keeps
-          # the vermagic equal to the official one. The checkout is shallow,
-          # so fetch the release tag first; the vermagic step is the real gate.
-          git fetch -q --depth=1 origin tag v25.12.5 2>/dev/null || true
-          if git rev-parse -q --verify v25.12.5 >/dev/null 2>&1; then
-            if git diff --quiet v25.12.5 HEAD -- target/linux/mediatek/filogic/config-6.12 target/linux/generic/config-6.12; then
+          # the vermagic equal to the official one. The checkout is shallow
+          # and the fork carries no v25.12.5 tag, so fetch the release commit
+          # by hash; the vermagic step later is the real gate.
+          BASE=f0a60eee2fe051741c643ea6118718aae1ef17fb  # v25.12.5
+          git fetch -q --depth=1 origin "$BASE" 2>/dev/null || true
+          if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            if git diff --quiet "$BASE" HEAD -- target/linux/mediatek/filogic/config-6.12 target/linux/generic/config-6.12; then
               echo "kernel config untouched since v25.12.5"
             else
               echo "::error::kernel config differs from v25.12.5 - the vermagic will not match"; fail=1
             fi
           else
-            echo "::warning::could not fetch tag v25.12.5, skipping the config diff (vermagic is asserted later)"
+            echo "::warning::could not fetch the v25.12.5 commit, skipping the config diff (vermagic is asserted later)"
           fi
           [ "$fail" = 0 ] || exit 1
           echo "GL-BE14000 support present"
