@@ -1,10 +1,19 @@
 name: Check GL-BE14000 kernel + kmods (25.12)
 # Fast compile check for the GL.iNet GL-BE14000 (Flint 4) branch on 25.12:
 # builds the kernel, the board DTB and the out-of-tree kmods against the
-# prebuilt 25.12 filogic toolchain container that OpenWrt's own CI uses,
-# and asserts the vermagic still equals the published 25.12.5 one. Takes
-# well under an hour, versus 5+ hours for the full release build, so the
+# prebuilt 25.12 filogic toolchain container that OpenWrt's own CI uses.
+# Takes ~10 minutes, versus 5+ hours for the full release build, so the
 # realtek and yt921x ports can be iterated on cheaply.
+#
+# Two kernels are configured and built the same way: this branch, and a
+# pristine v25.12.5 with a stock board. Their kernel configs are then
+# diffed: the branch must not add or change a single =y/=m line, because
+# the vermagic - and with it whether the official 25.12.5 kmods install -
+# is an md5 over exactly those lines. The published vermagic itself is
+# only reported here, not asserted: the container's compiler is whatever
+# the 25.12 branch head builds today, and compiler-probed CONFIG_CC_HAS_*
+# lines are part of the hash. The release workflow builds the toolchain
+# from the tagged tree and asserts the real value.
 #
 # Triggered by pushing a 'gl-be14000-check-*' tag (workflow_dispatch only
 # works for workflows that exist on the default branch, and this one stays
@@ -29,21 +38,39 @@ env:
   EXPECTED_VERMAGIC: 5a6c1f71be683ae9980b15d3ce73e24d
 
 jobs:
-  check:
-    name: mediatek/filogic kernel + dsa-yt921x
+  kernel:
+    name: kernel (${{ matrix.name }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 120
     container:
       image: ghcr.io/openwrt/toolchain:mediatek-filogic-openwrt-25.12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: branch
+            ref: ${{ github.sha }}
+            device: glinet_gl-be14000
+          - name: reference
+            ref: v25.12.5
+            device: bananapi_bpi-r4
 
     steps:
-      - name: Checkout
+      - name: Checkout the tree under test
         uses: actions/checkout@v4
         with:
+          ref: ${{ matrix.ref }}
           path: openwrt
 
+      - name: Checkout the seed config from this branch
+        uses: actions/checkout@v4
+        with:
+          path: seed
+          sparse-checkout: .github/workflows/config
+          sparse-checkout-cone-mode: false
+
       - name: Fix permission
-        run: chown -R buildbot:buildbot openwrt
+        run: chown -R buildbot:buildbot openwrt seed
 
       - name: Prepare prebuilt tools
         shell: su buildbot -c "sh -e {0}"
@@ -58,20 +85,27 @@ jobs:
         shell: su buildbot -c "sh -e {0}"
         working-directory: openwrt
         run: |
+          echo "----- toolchain in the container -----"
+          ls /external-toolchain/
           rm -f .config
           ./scripts/ext-toolchain.sh \
             --toolchain /external-toolchain/$(ls /external-toolchain/ | grep openwrt-toolchain)/toolchain-* \
             --overwrite-config \
             --config mediatek/filogic
           # Same seed as the release build, so the kernel config - and the
-          # vermagic - is the one the release will have.
-          cat .github/workflows/config/glinet-gl-be14000.config >> .config
+          # vermagic - is the one the release will have. The reference tree
+          # gets a stock board instead; with CONFIG_ALL_KMODS=y the kernel
+          # config does not depend on which board is selected.
+          sed 's/glinet_gl-be14000/${{ matrix.device }}/g' \
+            ../seed/.github/workflows/config/glinet-gl-be14000.config >> .config
           make defconfig
-          grep -qE '^CONFIG_TARGET(_DEVICE)?_mediatek_filogic_DEVICE_glinet_gl-be14000=y' .config \
-            || { echo "::error::glinet_gl-be14000 is not selected after defconfig"; exit 1; }
+          grep -qE '^CONFIG_TARGET(_DEVICE)?_mediatek_filogic_DEVICE_${{ matrix.device }}=y' .config \
+            || { echo "::error::${{ matrix.device }} is not selected after defconfig"; exit 1; }
           grep -qx 'CONFIG_ALL_KMODS=y' .config || { echo "::error::CONFIG_ALL_KMODS lost"; exit 1; }
-          grep -qx 'CONFIG_PACKAGE_kmod-dsa-yt921x=m' .config \
-            || { echo "::error::kmod-dsa-yt921x is not selected - is package/kernel/dsa-yt921x visible?"; exit 1; }
+          if [ "${{ matrix.name }}" = branch ]; then
+            grep -qx 'CONFIG_PACKAGE_kmod-dsa-yt921x=m' .config \
+              || { echo "::error::kmod-dsa-yt921x is not selected - is package/kernel/dsa-yt921x visible?"; exit 1; }
+          fi
           echo "config OK"
 
       - name: Download kernel sources
@@ -84,24 +118,38 @@ jobs:
         working-directory: openwrt
         run: make target/linux/compile -j$(nproc) BUILD_LOG=1 || ret=$? .github/workflows/scripts/show_build_failures.sh
 
-      - name: Assert vermagic matches the published 25.12.5 feed
+      - name: Report vermagic and export the kernel config
         shell: su buildbot -c "sh -e {0}"
         working-directory: openwrt
         run: |
+          mkdir -p ../kcfg
           VM=$(find build_dir -name '.vermagic' 2>/dev/null | head -1)
           [ -n "$VM" ] || { echo "::error::no .vermagic found in build_dir"; exit 1; }
-          ACTUAL=$(cat "$VM")
-          echo "computed vermagic: $ACTUAL"
-          echo "expected vermagic: $EXPECTED_VERMAGIC"
-          if [ "$ACTUAL" != "$EXPECTED_VERMAGIC" ]; then
-            echo "::error::vermagic is $ACTUAL, expected $EXPECTED_VERMAGIC - the kernel config drifted from the official 25.12.5 one"
-            KCFG=$(find build_dir -path '*linux-mediatek_filogic/linux-6.12*' -maxdepth 4 -name '.config' | head -1)
-            [ -n "$KCFG" ] && grep -E '=[ym]$' "$KCFG" | LC_ALL=C sort > /tmp/kernel-ym.txt && wc -l /tmp/kernel-ym.txt
-            exit 1
+          KCFG=$(find build_dir -path '*linux-mediatek_filogic/linux-6.12*' -maxdepth 4 -name '.config' | head -1)
+          [ -n "$KCFG" ] || { echo "::error::kernel .config not found"; exit 1; }
+          cp "$KCFG" ../kcfg/kernel.config
+          grep '=[ym]' "$KCFG" | LC_ALL=C sort > ../kcfg/kernel-ym.txt
+          cp "$VM" ../kcfg/vermagic
+          cp .config ../kcfg/openwrt.config
+          { ls /external-toolchain/; cat staging_dir/toolchain-*/info.mk 2>/dev/null; } > ../kcfg/toolchain.txt || true
+          echo "computed vermagic: $(cat "$VM") (published 25.12.5: $EXPECTED_VERMAGIC)"
+          echo "=y/=m lines: $(wc -l < ../kcfg/kernel-ym.txt)"
+          if [ "$(cat "$VM")" = "$EXPECTED_VERMAGIC" ]; then
+            echo "vermagic equals the published one"
+          else
+            echo "::warning::vermagic differs from the published one in this container; the compare job decides whether the branch is at fault"
           fi
-          echo "vermagic OK"
+
+      - name: Upload kernel config
+        uses: actions/upload-artifact@v4
+        with:
+          name: kcfg-${{ matrix.name }}
+          path: kcfg/
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Build the board DTB
+        if: matrix.name == 'branch'
         shell: su buildbot -c "sh -e {0}"
         working-directory: openwrt
         run: |
@@ -112,6 +160,7 @@ jobs:
           echo "DTB OK: $KDTB"
 
       - name: Build the out-of-tree kmods and firmware
+        if: matrix.name == 'branch'
         shell: su buildbot -c "sh -e {0}"
         working-directory: openwrt
         run: |
@@ -125,24 +174,53 @@ jobs:
           done
 
       - name: Check the realtek driver got the RTL8261C/D entry
+        if: matrix.name == 'branch'
         shell: su buildbot -c "sh -e {0}"
         working-directory: openwrt
         run: |
           SRC=$(find build_dir -path '*linux-mediatek_filogic/linux-6.12*/drivers/net/phy/realtek/realtek_main.c' | head -1)
           [ -n "$SRC" ] || { echo "::error::patched realtek_main.c not found"; exit 1; }
           grep -q 'RTL8261C/D-CG 10Gbps PHY' "$SRC" || { echo "::error::RTL8261C/D-CG entry missing from realtek_main.c"; exit 1; }
-          KO=$(find build_dir -name 'realtek.ko' | head -1)
           OBJ=$(find build_dir -path '*linux-mediatek_filogic/linux-6.12*/drivers/net/phy/realtek/realtek_main.o' | head -1)
-          echo "realtek objects: ${KO:-built-in} ${OBJ}"
+          echo "realtek object: ${OBJ}"
           echo "realtek OK"
 
       - name: Upload build logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: check-logs-${{ github.run_number }}
+          name: check-logs-${{ matrix.name }}-${{ github.run_number }}
           path: |
             openwrt/logs/
             openwrt/.config
           retention-days: 7
           if-no-files-found: ignore
+          include-hidden-files: true
+
+  compare:
+    name: kernel config must match v25.12.5
+    needs: kernel
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download both kernel configs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: kcfg-*
+          path: kcfg
+
+      - name: Diff the =y/=m lines
+        run: |
+          echo "reference vermagic: $(cat kcfg/kcfg-reference/vermagic)"
+          echo "branch    vermagic: $(cat kcfg/kcfg-branch/vermagic)"
+          echo "published vermagic: $EXPECTED_VERMAGIC"
+          echo "----- toolchain (reference) -----"; cat kcfg/kcfg-reference/toolchain.txt || true
+          if diff -u kcfg/kcfg-reference/kernel-ym.txt kcfg/kcfg-branch/kernel-ym.txt > ym.diff; then
+            echo "kernel =y/=m lines identical to v25.12.5 - the branch adds no kernel config symbol"
+          else
+            echo "::error::the branch changes the kernel config relative to v25.12.5:"
+            cat ym.diff
+            exit 1
+          fi
+          if [ "$(cat kcfg/kcfg-reference/vermagic)" != "$EXPECTED_VERMAGIC" ]; then
+            echo "::warning::even the pristine v25.12.5 kernel does not hash to the published vermagic in this container - compiler-probed CONFIG_CC_HAS_* lines differ from the buildbot's; the release build compiles its own toolchain and asserts the real value"
+          fi

@@ -361,3 +361,4 @@ jobs:
             .config
           retention-days: 14
           if-no-files-found: ignore
+          include-hidden-files: true
