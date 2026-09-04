@@ -6,10 +6,16 @@ name: Check GL-BE14000 kernel + kmods (25.12)
 # well under an hour, versus 5+ hours for the full release build, so the
 # realtek and yt921x ports can be iterated on cheaply.
 #
-# Manual dispatch only. Publishes nothing.
+# Triggered by pushing a 'gl-be14000-check-*' tag (workflow_dispatch only
+# works for workflows that exist on the default branch, and this one stays
+# off main on purpose). Publishes nothing; ordinary pushes to the branch
+# still build nothing.
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'gl-be14000-check-*'
 
 permissions:
   contents: read
