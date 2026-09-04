@@ -44,6 +44,16 @@ concurrency:
 env:
   DEVICE: glinet_gl-be14000
   TARGET_DIR: bin/targets/mediatek/filogic
+  # The cherry-picked "build: use the make from tools/ when the host make is
+  # too old" re-execs every make through tools/make when the host make is
+  # older than 4.4 (ubuntu-24.04 ships 4.3). That builds tools/make before
+  # `make defconfig` has produced a real .config, and the .config rule then
+  # launches menuconfig on a runner with no terminal. Setting REEXEC_MAKE=1
+  # tells the top-level Makefile the hand-over already happened, so the tree
+  # builds with the host make like upstream CI does. The only thing lost is
+  # ninja honouring -j inside cmake/meson packages, which on a 4-core runner
+  # does not matter.
+  REEXEC_MAKE: "1"
 
 jobs:
   build:
