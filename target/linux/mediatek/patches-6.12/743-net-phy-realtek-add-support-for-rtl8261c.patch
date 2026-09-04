@@ -114,7 +114,7 @@ Refreshed against the 25.12 (6.12) realtek driver.
  	return ETHTOOL_A_CABLE_RESULT_CODE_UNSPEC;
  }
  
-@@ -2327,6 +2369,155 @@ static int rtl826x_config_serdes_polarity(struct phy_device *phydev)
+@@ -2328,6 +2370,155 @@ static int rtl826x_config_serdes_polarity(struct phy_device *phydev)
  			      mask, set);
  }
  
@@ -270,7 +270,7 @@ Refreshed against the 25.12 (6.12) realtek driver.
  static int rtl826x_config_init(struct phy_device *phydev)
  {
  	const unsigned int max_dereset_tries = 5;
-@@ -2401,6 +2592,24 @@ static int rtl826x_get_features(struct phy_device *phydev)
+@@ -2402,6 +2593,24 @@ static int rtl826x_get_features(struct phy_device *phydev)
  	return 0;
  }
  
@@ -295,7 +295,7 @@ Refreshed against the 25.12 (6.12) realtek driver.
  static int rtl825xb_get_features(struct phy_device *phydev)
  {
  	int ret;
-@@ -2574,6 +2783,86 @@ static irqreturn_t rtl826x_handle_interrupt(struct phy_device *phydev)
+@@ -2575,6 +2784,86 @@ static irqreturn_t rtl826x_handle_interrupt(struct phy_device *phydev)
  	return IRQ_HANDLED;
  }
  
@@ -382,7 +382,7 @@ Refreshed against the 25.12 (6.12) realtek driver.
  static int rtl826x_set_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
  {
  	static const u32 cfg_reg[4] = {0xD8C6, 0xD8C8, 0xD8CA, 0xD8CC};
-@@ -3055,6 +3344,25 @@ static struct phy_driver realtek_drvs[] = {
+@@ -3056,6 +3345,25 @@ static struct phy_driver realtek_drvs[] = {
  		.get_wol        = rtl826x_get_wol,
  		.get_tunable    = rtl826x_get_tunable,
  		.set_tunable    = rtl826x_set_tunable,

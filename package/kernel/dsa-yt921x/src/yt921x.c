@@ -2435,7 +2435,7 @@ yt921x_acl_add(struct yt921x_priv *priv,
 	binid = entid % YT921X_ACL_ENT_PER_BLK;
 	aclblk = priv->acl_blks[blkid];
 	if (!aclblk) {
-		aclblk = kvzalloc_obj(*aclblk);
+		aclblk = kvzalloc(sizeof(*aclblk), GFP_KERNEL);
 		if (!aclblk)
 			return -ENOMEM;
 		priv->acl_blks[blkid] = aclblk;
