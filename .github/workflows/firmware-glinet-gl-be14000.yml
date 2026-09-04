@@ -234,8 +234,9 @@ jobs:
               the Motorcomm YT9224 switch, and its integrated PHYs (ID `0x4f51e899`)
               have no driver in the kernel so far. They fail to probe at boot - the
               related errors in `dmesg` are expected - and stay dead until a driver
-              lands. Use the 10G WAN port, the SFP+ cage or the 1GbE ports
-              `lan5`-`lan8` (MT7988 built-in switch) in the meantime.
+              lands. Use the 10G WAN port or the 1GbE ports `lan5`-`lan8` (MT7988
+              built-in switch) in the meantime. The SFP+ cage (`sfp`) sits on the
+              same YT9224 switch, so treat it as untested until someone confirms it.
             * Snapshot base: package feeds move daily, so `opkg`/`apk` installs may
               not match this build after a while. Everything you need should be in
               the image already.
