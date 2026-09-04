@@ -97,11 +97,17 @@ jobs:
           grep -q 'glinet,gl-be14000' target/linux/mediatek/filogic/base-files/etc/board.d/02_network \
             || { echo "::error::02_network has no glinet,gl-be14000 entry"; fail=1; }
           # This branch must not touch the kernel config: that is what keeps
-          # the vermagic equal to the official one.
-          if git diff --quiet v25.12.5 HEAD -- target/linux/mediatek/filogic/config-6.12 target/linux/generic/config-6.12 2>/dev/null; then
-            echo "kernel config untouched since v25.12.5"
+          # the vermagic equal to the official one. The checkout is shallow,
+          # so fetch the release tag first; the vermagic step is the real gate.
+          git fetch -q --depth=1 origin tag v25.12.5 2>/dev/null || true
+          if git rev-parse -q --verify v25.12.5 >/dev/null 2>&1; then
+            if git diff --quiet v25.12.5 HEAD -- target/linux/mediatek/filogic/config-6.12 target/linux/generic/config-6.12; then
+              echo "kernel config untouched since v25.12.5"
+            else
+              echo "::error::kernel config differs from v25.12.5 - the vermagic will not match"; fail=1
+            fi
           else
-            echo "::error::kernel config differs from v25.12.5 - the vermagic will not match"; fail=1
+            echo "::warning::could not fetch tag v25.12.5, skipping the config diff (vermagic is asserted later)"
           fi
           [ "$fail" = 0 ] || exit 1
           echo "GL-BE14000 support present"
@@ -195,7 +201,7 @@ jobs:
         run: |
           fail=0
           for m in yt921x tag_yt921x; do
-            f=$(find build_dir/target-*/dsa-yt921x -name "$m.ko" 2>/dev/null | head -1)
+            f=$(find build_dir -path '*/dsa-yt921x/*' -name "$m.ko" 2>/dev/null | head -1)
             [ -n "$f" ] || { echo "::error::$m.ko was not built"; fail=1; }
           done
           KDTB=$(find build_dir -name 'image-mt7988a-glinet-gl-be14000.dtb' 2>/dev/null | head -1)
