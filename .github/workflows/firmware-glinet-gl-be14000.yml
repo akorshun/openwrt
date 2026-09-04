@@ -81,7 +81,7 @@ jobs:
           fail=0
           chk() { [ -e "$1" ] || { echo "::error::missing $1"; fail=1; }; }
           chk target/linux/mediatek/dts/mt7988a-glinet-gl-be14000.dts
-          chk target/linux/generic/pending-6.18/743-net-phy-realtek-add-support-for-rtl8261c.patch
+          chk target/linux/generic/pending-6.18/744-net-phy-realtek-add-support-for-rtl8261c.patch
           chk target/linux/mediatek/patches-6.18/967-27-net-dsa-yt92xx-Add-support-for-Motorcomm-YT922x.patch
           grep -q '^define Device/glinet_gl-be14000$' target/linux/mediatek/image/filogic.mk \
             || { echo "::error::filogic.mk has no Device/glinet_gl-be14000"; fail=1; }
