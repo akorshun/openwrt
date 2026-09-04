@@ -38,6 +38,15 @@ static inline struct net_device *dsa_conduit_find_user(struct net_device *dev,
 	return NULL;
 }
 
+/* net/dsa/user.h keeps dsa_user_to_port() private; dsa_port_from_netdev()
+ * is the exported way to the same pointer (it only adds a check that the
+ * netdev really is a DSA user port, which a tagger is only ever handed).
+ */
+static inline struct dsa_port *dsa_user_to_port(const struct net_device *dev)
+{
+	return dsa_port_from_netdev((struct net_device *)dev);
+}
+
 /* If the ingress port offloads the bridge, we mark the frame as autonomously
  * forwarded by hardware, so the software bridge doesn't forward in twice, back
  * to us, because we already did. However, if we're in fallback mode and we do
