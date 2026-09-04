@@ -88,6 +88,16 @@ jobs:
           ln -s /prebuilt_tools/build_dir/host build_dir/host
           ./scripts/ext-tools.sh --refresh
 
+      - name: Update and install feeds
+        # The vermagic is computed from every package that carries KCONFIG,
+        # feed packages included, so the package set has to be the one the
+        # buildbot had.
+        shell: su buildbot -c "sh -e {0}"
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
       - name: Configure external toolchain and the board
         shell: su buildbot -c "sh -e {0}"
         working-directory: openwrt
@@ -99,13 +109,24 @@ jobs:
             --toolchain /external-toolchain/$(ls /external-toolchain/ | grep openwrt-toolchain)/toolchain-* \
             --overwrite-config \
             --config mediatek/filogic
+          # ext-toolchain.sh ends with its own `make defconfig`, which writes
+          # every kmod out as "is not set". Those explicit lines would beat
+          # the seed's CONFIG_ALL_KMODS default and leave the kernel config
+          # nothing like the buildbot's, so keep only what the script decided
+          # about the toolchain and libc, and let the seed drive the rest.
+          grep -E '^(# )?CONFIG_(EXTERNAL_TOOLCHAIN|TOOLCHAIN_ROOT|TOOLCHAIN_PREFIX|TARGET_NAME|EXTERNAL_TOOLCHAIN_LIBC_USE_[A-Z]+|EXTERNAL_GCC_VERSION|SOFT_FLOAT|IPV6|BUILD_NLS|PACKAGE_(libc|librt|libpthread|libgcc|libstdcpp|libssp|libgfortran|libgomp|libatomic|libquadmath|libasan|libtsan|liblsan|libubsan|ldd|ldconfig)|LIB(C|RT|PTHREAD|GCC|STDCPP|SSP|GFORTRAN|GOMP|ATOMIC|QUADMATH|ASAN|TSAN|LSAN|UBSAN)_(FILE_SPEC|ROOT_DIR)|LDD_FILE_SPEC|LDCONFIG_FILE_SPEC)(=| is not set)' .config > .config.toolchain
+          echo "----- toolchain lines kept -----"
+          cat .config.toolchain
           # Same seed as the release build, so the kernel config - and the
           # vermagic - is the one the release will have. The reference tree
           # gets a stock board instead; with CONFIG_ALL_KMODS=y the kernel
           # config does not depend on which board is selected.
-          sed 's/glinet_gl-be14000/${{ matrix.device }}/g' \
-            ../seed/.github/workflows/config/glinet-gl-be14000.config >> .config
+          { cat .config.toolchain
+            sed 's/glinet_gl-be14000/${{ matrix.device }}/g' \
+              ../seed/.github/workflows/config/glinet-gl-be14000.config
+          } > .config
           make defconfig
+          echo "kmods selected: $(grep -cE '^CONFIG_PACKAGE_kmod-.*=[ym]$' .config)"
           grep -qE '^CONFIG_TARGET(_DEVICE)?_mediatek_filogic_DEVICE_${{ matrix.device }}=y' .config \
             || { echo "::error::${{ matrix.device }} is not selected after defconfig"; exit 1; }
           grep -qx 'CONFIG_ALL_KMODS=y' .config || { echo "::error::CONFIG_ALL_KMODS lost"; exit 1; }
@@ -114,6 +135,25 @@ jobs:
               || { echo "::error::kmod-dsa-yt921x is not selected - is package/kernel/dsa-yt921x visible?"; exit 1; }
           fi
           echo "config OK"
+
+      - name: Give the external toolchain a real info.mk
+        # rules.mk reads GCC_VERSION/LIBC_* for an external toolchain from
+        # staging_dir/toolchain-*/info.mk, and the tree only ever drops the
+        # "unknown" template there. package/libs/toolchain then tries to
+        # build libgcc1-unknown-r5.apk, which apk refuses, and every kmod
+        # package depends on it.
+        shell: su buildbot -c "sh -e {0}"
+        working-directory: openwrt
+        run: |
+          GCCV=$(sed -n 's/^CONFIG_EXTERNAL_GCC_VERSION="\(.*\)"/\1/p' .config)
+          MUSLV=$(sed -n 's/^PKG_VERSION:=//p' toolchain/musl/common.mk)
+          PREFIX=$(sed -n 's/^CONFIG_TOOLCHAIN_PREFIX="\(.*\)"/\1/p' .config)
+          TC=staging_dir/toolchain-$(sed -n 's/^CONFIG_TARGET_NAME="\(.*\)"/\1/p' .config)
+          [ -n "$GCCV" ] && [ -n "$MUSLV" ] && [ -n "$PREFIX" ] || { echo "::error::could not read toolchain versions from .config"; exit 1; }
+          mkdir -p "$TC"
+          printf 'TARGET_CROSS=%s\nGCC_VERSION=%s\nLIBC_TYPE=musl\nLIBC_URL=http://www.musl-libc.org/\nLIBC_VERSION=%s\nLIBC_SO_VERSION=%s\n' \
+            "$PREFIX" "$GCCV" "$MUSLV" "$MUSLV" > "$TC/info.mk"
+          cat "$TC/info.mk"
 
       - name: Download kernel sources
         shell: su buildbot -c "sh -e {0}"
