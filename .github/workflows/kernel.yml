@@ -19,6 +19,7 @@ on:
       - 'target/linux/**'
     branches-ignore:
       - master
+      - main-friendlyarm-nanopi-r28s
   workflow_dispatch:
 
 permissions:
