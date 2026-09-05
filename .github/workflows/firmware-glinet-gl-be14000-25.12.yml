@@ -206,7 +206,7 @@ jobs:
       - name: Build firmware
         run: make -j$(nproc) ${{ inputs.verbose == 'true' && 'V=s' || '' }}
 
-      - name: Verify the switch driver and the board DTB
+      - name: Verify the switch driver, the board DTB and the device rootfs
         run: |
           fail=0
           for m in yt921x tag_yt921x; do
@@ -221,22 +221,54 @@ jobs:
             strings "$KDTB" | grep -qx 'motorcomm,yt9224' \
               || { echo "::error::DTB has no motorcomm,yt9224 switch node"; fail=1; }
           fi
-          # With TARGET_PER_DEVICE_ROOTFS and a single profile the manifest is
-          # named after the target, not the device, so do not look for the
-          # device name in it. This is the only check that proves the packages
-          # actually reached the rootfs, so a missing manifest is an error.
-          MAN=$(find "${TARGET_DIR}" -maxdepth 1 -name '*.manifest' 2>/dev/null | head -1)
-          if [ -n "$MAN" ]; then
-            echo "manifest: $MAN"
-            for p in kmod-dsa-yt921x rtl8261c-firmware kmod-mt7996-233-firmware luci; do
-              grep -q "^$p " "$MAN" || { echo "::error::$p missing from the image manifest"; fail=1; }
-            done
-          else
-            echo "::error::no manifest found under ${TARGET_DIR}"
+          # The manifest OpenWrt writes (include/image.mk, Image/Manifest) is
+          # taken from TARGET_DIR_ORIG - the rootfs before DEVICE_PACKAGES are
+          # added - and with CONFIG_TARGET_MULTI_PROFILE it is not even named
+          # after the device. So it lists luci but never kmod-dsa-yt921x.
+          # What goes into the image is $(KDIR)/target-dir-<id>; check the
+          # files there, and generate the manifest the image really deserves.
+          RD=""
+          for d in $(find build_dir -maxdepth 4 -type d -name 'target-dir-*' 2>/dev/null); do
+            [ -d "$d/lib/modules" ] || continue
+            RD="$d"
+            break
+          done
+          if [ -z "$RD" ]; then
+            echo "::error::per-device rootfs (target-dir-*) not found"
             fail=1
+          else
+            echo "device rootfs: $RD"
+            # The files themselves are the ground truth about what is in the
+            # image, so these are the checks that fail the build.
+            for f in yt921x.ko tag_yt921x.ko; do
+              find "$RD/lib/modules" -name "$f" | grep -q . \
+                || { echo "::error::$f is not in the device rootfs"; fail=1; }
+            done
+            [ -f "$RD/lib/firmware/rtl8261c.bin" ] \
+              || { echo "::error::rtl8261c.bin is not in the device rootfs"; fail=1; }
+            [ -f "$RD/lib/firmware/mediatek/mt7996/mt7996_wm_233.bin" ] \
+              || { echo "::error::MT7996 2/3/3 Wi-Fi firmware is not in the device rootfs"; fail=1; }
+            DEVMAN="${TARGET_DIR}/openwrt-25.12.5-mediatek-filogic-${DEVICE}.manifest"
+            IPKG_INSTROOT="$RD" staging_dir/host/bin/apk --root "$RD" \
+              --keys-dir "$(pwd)" --no-logfile --preserve-env \
+              list --quiet --manifest --no-network --repositories-file /dev/null \
+              2>/dev/null | sort | sed 's/ / - /' > "$DEVMAN" || true
+            if [ -s "$DEVMAN" ]; then
+              echo "device manifest: $(wc -l < "$DEVMAN") packages"
+              # Only a warning: apk is being run against an offline root here,
+              # and the file checks above already decided the build.
+              for p in kmod-dsa-yt921x rtl8261c-firmware kmod-mt7996-233-firmware luci; do
+                grep -q "^$p " "$DEVMAN" \
+                  || echo "::warning::$p is not listed in the generated device manifest"
+              done
+            else
+              # Not fatal: the file checks above already prove what shipped.
+              echo "::warning::could not generate a per-device manifest with apk"
+              rm -f "$DEVMAN"
+            fi
           fi
           [ "$fail" = 0 ] || exit 1
-          echo "switch driver, DTB and manifest OK"
+          echo "switch driver, DTB and device rootfs OK"
 
       - name: Verify the shipped kmods feed line
         run: |
@@ -363,7 +395,10 @@ jobs:
               present.
             * `kmods-${{ env.EXPECTED_KERNEL }}-${{ env.EXPECTED_VERMAGIC }}.tar.gz` -
               every kernel module package this build produced, plus the apk index.
-            * `*.manifest` - every package that went into the image, with versions.
+            * `*-glinet_gl-be14000.manifest` - every package in the image, with
+              versions. (`openwrt-25.12.5-mediatek-filogic.manifest` is the one
+              OpenWrt writes itself: the shared rootfs, before this board's own
+              packages are added.)
             * `sha256sums`, `profiles.json`, `build.config` - checksums, the image
               metadata and the exact `.config` used.
 
