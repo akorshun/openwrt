@@ -221,13 +221,19 @@ jobs:
             strings "$KDTB" | grep -qx 'motorcomm,yt9224' \
               || { echo "::error::DTB has no motorcomm,yt9224 switch node"; fail=1; }
           fi
-          MAN=$(find "${TARGET_DIR}" -name "*${DEVICE}.manifest" 2>/dev/null | head -1)
+          # With TARGET_PER_DEVICE_ROOTFS and a single profile the manifest is
+          # named after the target, not the device, so do not look for the
+          # device name in it. This is the only check that proves the packages
+          # actually reached the rootfs, so a missing manifest is an error.
+          MAN=$(find "${TARGET_DIR}" -maxdepth 1 -name '*.manifest' 2>/dev/null | head -1)
           if [ -n "$MAN" ]; then
+            echo "manifest: $MAN"
             for p in kmod-dsa-yt921x rtl8261c-firmware kmod-mt7996-233-firmware luci; do
               grep -q "^$p " "$MAN" || { echo "::error::$p missing from the image manifest"; fail=1; }
             done
           else
-            echo "::warning::no manifest found under ${TARGET_DIR}"
+            echo "::error::no manifest found under ${TARGET_DIR}"
+            fail=1
           fi
           [ "$fail" = 0 ] || exit 1
           echo "switch driver, DTB and manifest OK"
@@ -256,17 +262,24 @@ jobs:
         run: |
           mkdir -p artifacts
           cp -v "${TARGET_DIR}"/*gl-be14000* artifacts/ 2>/dev/null || true
+          cp -v "${TARGET_DIR}"/*.manifest artifacts/ 2>/dev/null || true
           cp -v "${TARGET_DIR}"/sha256sums artifacts/ 2>/dev/null || true
           cp -v "${TARGET_DIR}"/profiles.json artifacts/ 2>/dev/null || true
           cp -v .config artifacts/build.config 2>/dev/null || true
-          # CONFIG_ALL_KMODS=y means this build produced the whole kmods feed
-          # itself. Ship it: same source, same config, same vermagic, usable
-          # offline, and it is the only place kmod-dsa-yt921x exists.
-          KDIR=$(find "${TARGET_DIR}"/kmods -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
-          if [ -n "$KDIR" ]; then
-            tar -czf "artifacts/kmods-$(basename "$KDIR").tar.gz" -C "$KDIR" .
+          # CONFIG_ALL_KMODS=y means this build produced the whole kernel
+          # module set itself. Ship it: same source, same config, same
+          # vermagic, and it is the only place kmod-dsa-yt921x exists.
+          # There is no local kmods/ directory - that path only exists on
+          # downloads.openwrt.org, where the buildbot rsyncs them; locally
+          # every package lands in ${TARGET_DIR}/packages together with the
+          # apk index the feed needs.
+          PKGDIR="${TARGET_DIR}/packages"
+          if [ -d "$PKGDIR" ] && ls "$PKGDIR"/kmod-*.apk >/dev/null 2>&1; then
+            echo "kmod packages: $(ls "$PKGDIR"/kmod-*.apk | wc -l), total $(du -sh "$PKGDIR" | cut -f1)"
+            tar -czf "artifacts/kmods-${EXPECTED_KERNEL}-${EXPECTED_VERMAGIC}.tar.gz" -C "$PKGDIR" .
           else
-            echo "::warning::no kmods directory found under ${TARGET_DIR}"
+            echo "::error::no kmod packages found under $PKGDIR"
+            exit 1
           fi
           ls -lh artifacts/
           ls artifacts/ | grep -q "${DEVICE}-squashfs-sysupgrade.bin" \
@@ -324,9 +337,11 @@ jobs:
             carries the matching kmods feed line, so `apk add kmod-*` (and LuCI's
             package manager) pulls kernel modules straight from
             downloads.openwrt.org like on an official image. `kmods-*.tar.gz` in
-            this release is the same feed as built here, for offline use - and the
-            only place `kmod-dsa-yt921x` (the YT9224 switch driver, built out of
-            tree) exists.
+            this release is the module set this build produced itself, with the
+            apk index, for offline use - and the only place `kmod-dsa-yt921x`
+            (the YT9224 switch driver, built out of tree) exists. It is already
+            installed in the image; the archive is for reinstalling it later or
+            using it on another 25.12.5 build of this board.
 
             ### What is in the image
 
@@ -347,7 +362,8 @@ jobs:
             * `*-initramfs-kernel.bin` - RAM-only image for recovery/testing, if
               present.
             * `kmods-${{ env.EXPECTED_KERNEL }}-${{ env.EXPECTED_VERMAGIC }}.tar.gz` -
-              the complete kmods feed built alongside.
+              every kernel module package this build produced, plus the apk index.
+            * `*.manifest` - every package that went into the image, with versions.
             * `sha256sums`, `profiles.json`, `build.config` - checksums, the image
               metadata and the exact `.config` used.
 
