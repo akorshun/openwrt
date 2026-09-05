@@ -1,0 +1,59 @@
+From: OpenWrt NanoPi R28S port
+Subject: [PATCH] arm64: dts: rockchip: Update LED properties for NanoPi R28S
+
+Wire the SYS LED into OpenWrt's boot/failsafe/running/upgrade aliases and
+drop the in-kernel triggers, which OpenWrt sets from userspace instead.
+
+Also remap the USER button to KEY_RESTART so gpio-button-hotplug reports it
+as the reset button, the way every other OpenWrt router with a single user
+button behaves.
+---
+--- a/arch/arm64/boot/dts/rockchip/rk3528-nanopi-r28s.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3528-nanopi-r28s.dts
+@@ -21,6 +21,11 @@
+ 		mmc1 = &sdmmc;
+ 		mmc2 = &sdio0;
+ 		serial0 = &uart0;
++
++		led-boot = &sys_led;
++		led-failsafe = &sys_led;
++		led-running = &sys_led;
++		led-upgrade = &sys_led;
+ 	};
+ 
+ 	chosen {
+@@ -49,7 +54,7 @@
+ 		button-user {
+ 			gpios = <&gpio4 RK_PB2 GPIO_ACTIVE_LOW>;
+ 			label = "USER";
+-			linux,code = <BTN_1>;
++			linux,code = <KEY_RESTART>;
+ 			wakeup-source;
+ 		};
+ 	};
+@@ -64,15 +69,13 @@
+ 			default-state = "off";
+ 			function = LED_FUNCTION_LAN;
+ 			gpios = <&gpio4 RK_PB1 GPIO_ACTIVE_HIGH>;
+-			linux,default-trigger = "netdev";
+ 		};
+ 
+-		led-sys {
++		sys_led: led-sys {
+ 			color = <LED_COLOR_ID_RED>;
+-			default-state = "on";
++			default-state = "off";
+ 			function = LED_FUNCTION_HEARTBEAT;
+ 			gpios = <&gpio4 RK_PB0 GPIO_ACTIVE_HIGH>;
+-			linux,default-trigger = "heartbeat";
+ 		};
+ 
+ 		led-wan {
+@@ -80,7 +83,6 @@
+ 			default-state = "off";
+ 			function = LED_FUNCTION_WAN;
+ 			gpios = <&gpio4 RK_PB3 GPIO_ACTIVE_HIGH>;
+-			linux,default-trigger = "netdev";
+ 		};
+ 	};
+ 
