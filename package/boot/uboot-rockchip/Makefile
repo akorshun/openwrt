@@ -174,6 +174,18 @@ define U-Boot/rk3528/Default
   TPL:=rk3528_ddr_1056MHz_v1.11.bin
 endef
 
+# U-Boot 2025.10 has no defconfig for the NanoPi R28S, and here it only has
+# to bring up DRAM and the SD/eMMC controller - the kernel FIT carries the
+# right board DTB. The generic RK3528 board covers exactly that on any board
+# following the reference design, with the debug UART at uart0 and the same
+# 1500000 baud the R28S console runs at.
+define U-Boot/generic-rk3528
+  $(U-Boot/rk3528/Default)
+  NAME:=Generic RK3528
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r28s
+endef
+
 define U-Boot/hinlink-h28k-rk3528
   $(U-Boot/rk3528/Default)
   NAME:=HINLINK H28K
@@ -427,6 +439,7 @@ UBOOT_TARGETS := \
   rock64-rk3328 \
   rock-pi-e-rk3328 \
   rock-pi-e-v3-rk3328 \
+  generic-rk3528 \
   hinlink-h28k-rk3528 \
   radxa-e20c-rk3528 \
   rock-2-rk3528 \
