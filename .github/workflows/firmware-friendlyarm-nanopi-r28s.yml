@@ -91,6 +91,15 @@ jobs:
           chk "$PD/167-arm64-dts-rockchip-Update-LED-properties-for-NanoPi-R28S.patch"
           grep -q '^define Device/friendlyarm_nanopi-r28s$' target/linux/rockchip/image/armv8.mk \
             || { echo "::error::armv8.mk has no Device/friendlyarm_nanopi-r28s"; fail=1; }
+          # Without this the generic 99-default_network runs instead, and it
+          # only adds a WAN when /sys/class/net/eth1 already exists - which,
+          # for a NIC behind PCIe, it may not when preinit generates the
+          # config. The board then boots with LAN only, permanently.
+          NET=target/linux/rockchip/base-files/etc/board.d/02_network
+          grep -q 'friendlyarm,nanopi-r28s' "$NET" 2>/dev/null \
+            || { echo "::error::$NET has no friendlyarm,nanopi-r28s entry"; fail=1; }
+          grep -q 'ucidef_set_interfaces_lan_wan "eth0" "eth1"' "$NET" 2>/dev/null \
+            || { echo "::error::$NET does not assign LAN/WAN unconditionally"; fail=1; }
           # Without this the build falls back to the default UBOOT_DEVICE_NAME
           # (nanopi-r28s-rk3528), for which U-Boot has no defconfig at all.
           grep -q 'UBOOT_DEVICE_NAME := nanopi-zero2-rk3528' target/linux/rockchip/image/armv8.mk \

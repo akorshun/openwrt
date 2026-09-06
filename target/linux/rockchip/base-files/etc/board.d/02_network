@@ -1,0 +1,65 @@
+#
+# Copyright (C) 2026 OpenWrt.org
+#
+
+. /lib/functions/uci-defaults.sh
+. /lib/functions/system.sh
+
+rockchip_setup_interfaces()
+{
+	local board="$1"
+
+	case "$board" in
+	friendlyarm,nanopi-r28s)
+		ucidef_set_interfaces_lan_wan "eth0" "eth1"
+		;;
+	esac
+}
+
+nanopi_r28s_get_mac()
+{
+	local interface=$1
+	local mmc_dev address
+
+	# This board carries no EEPROM and no MAC in OTP, so stmmac and r8169
+	# each invent a random address on every boot. Derive a stable pair from
+	# a card ID instead. The eMMC module is preferred because it stays with
+	# the board; the SD card is only used when no eMMC is fitted, and moving
+	# that card to another board takes the addresses with it.
+	for mmc_dev in mmcblk0 mmcblk1; do
+		[ -r "/sys/class/block/$mmc_dev/device/cid" ] || continue
+		address=$(macaddr_generate_from_mmc_cid "$mmc_dev")
+		break
+	done
+
+	[ -n "$address" ] || return
+
+	[ "$interface" = "lan" ] && address=$(macaddr_add "$address" 1)
+
+	echo "$address"
+}
+
+rockchip_setup_macs()
+{
+	local board="$1"
+	local lan_mac=""
+	local wan_mac=""
+
+	case "$board" in
+	friendlyarm,nanopi-r28s)
+		wan_mac=$(nanopi_r28s_get_mac wan)
+		lan_mac=$(nanopi_r28s_get_mac lan)
+		;;
+	esac
+
+	[ -n "$lan_mac" ] && ucidef_set_interface_macaddr "lan" $lan_mac
+	[ -n "$wan_mac" ] && ucidef_set_interface_macaddr "wan" $wan_mac
+}
+
+board_config_update
+board=$(board_name)
+rockchip_setup_interfaces $board
+rockchip_setup_macs $board
+board_config_flush
+
+exit 0
