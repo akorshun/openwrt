@@ -91,15 +91,28 @@ jobs:
           chk "$PD/167-arm64-dts-rockchip-Update-LED-properties-for-NanoPi-R28S.patch"
           grep -q '^define Device/friendlyarm_nanopi-r28s$' target/linux/rockchip/image/armv8.mk \
             || { echo "::error::armv8.mk has no Device/friendlyarm_nanopi-r28s"; fail=1; }
-          # Without this the generic 99-default_network runs instead, and it
-          # only adds a WAN when /sys/class/net/eth1 already exists - which,
-          # for a NIC behind PCIe, it may not when preinit generates the
-          # config. The board then boots with LAN only, permanently.
-          NET=target/linux/rockchip/base-files/etc/board.d/02_network
-          grep -q 'friendlyarm,nanopi-r28s' "$NET" 2>/dev/null \
+          # The subtarget board.d ends in a `*) ucidef_set_interface_lan eth0`
+          # default that sets a network object and no WAN, which then makes
+          # 99-default_network bail out too. A board missing from here boots
+          # with LAN only and no second port at all.
+          NET=target/linux/rockchip/armv8/base-files/etc/board.d/02_network
+          LEDS=target/linux/rockchip/armv8/base-files/etc/board.d/01_leds
+          grep -q 'friendlyarm,nanopi-r28s' "$NET" \
             || { echo "::error::$NET has no friendlyarm,nanopi-r28s entry"; fail=1; }
-          grep -q 'ucidef_set_interfaces_lan_wan "eth1" "eth0"' "$NET" 2>/dev/null \
-            || { echo "::error::$NET does not assign LAN=eth1 / WAN=eth0 unconditionally"; fail=1; }
+          grep -q 'friendlyarm,nanopi-r28s' "$LEDS" \
+            || { echo "::error::$LEDS has no friendlyarm,nanopi-r28s entry"; fail=1; }
+          # ...and in the right group: LAN on the PCIe NIC, WAN on the GMAC.
+          awk '/friendlyarm,nanopi-r28s/ { f=1 }
+               f && /ucidef_set_interfaces_lan_wan/ { print; exit }' "$NET" \
+            | grep -q "ucidef_set_interfaces_lan_wan 'eth1' 'eth0'" \
+            || { echo "::error::the R28S is not in the LAN=eth1/WAN=eth0 group of $NET"; fail=1; }
+          # base-files installs PLATFORM_SUBDIR over PLATFORM_DIR, so a copy at
+          # the target level is silently overwritten by the armv8 one. That
+          # cost a release once; do not let it happen again.
+          if [ -e target/linux/rockchip/base-files/etc/board.d/02_network ]; then
+            echo "::error::target-level board.d/02_network exists - armv8 shadows it, move the entry there"
+            fail=1
+          fi
           # Without this the build falls back to the default UBOOT_DEVICE_NAME
           # (nanopi-r28s-rk3528), for which U-Boot has no defconfig at all.
           grep -q 'UBOOT_DEVICE_NAME := nanopi-zero2-rk3528' target/linux/rockchip/image/armv8.mk \
