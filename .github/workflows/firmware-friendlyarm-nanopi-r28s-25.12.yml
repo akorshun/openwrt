@@ -179,6 +179,24 @@ jobs:
           grep -qE '^CONFIG_PACKAGE_kmod-r8169=[ym]' .config \
             || { echo "::error::kmod-r8169 is not selected - the PCIe port would have no driver"; fail=1; }
 
+          # A DEVICE_PACKAGES entry that does not exist on this branch survives
+          # defconfig untouched and only blows up at image time, three hours
+          # in, when apk resolves the per-device rootfs. This branch is a
+          # backport, so names carried over from main are exactly the risk -
+          # kmod-input-adc-keys, for one, does not exist in 25.12.5. Check them
+          # against the package index while it is still cheap.
+          if [ -s tmp/.packageinfo ]; then
+            PKGS=$(sed -n "/^define Device\/${DEVICE}\$/,/^endef\$/p" target/linux/rockchip/image/armv8.mk \
+              | sed -n 's/^  DEVICE_PACKAGES := //p')
+            echo "DEVICE_PACKAGES: ${PKGS:-(none)}"
+            for p in $PKGS; do
+              grep -qx "Package: $p" tmp/.packageinfo \
+                || { echo "::error::DEVICE_PACKAGES names $p, which is not a package on this branch"; fail=1; }
+            done
+          else
+            echo "::warning::tmp/.packageinfo is missing, cannot verify DEVICE_PACKAGES names"
+          fi
+
           # include/kernel-defaults.mk copies every CONFIG_KERNEL_* symbol into
           # the kernel config, so each one is part of the ABI the official
           # kmods were built against. config.buildinfo is a diffconfig -
