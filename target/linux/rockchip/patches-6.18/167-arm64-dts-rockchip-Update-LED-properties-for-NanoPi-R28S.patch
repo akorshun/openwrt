@@ -34,7 +34,7 @@ button behaves.
 @@ -64,15 +69,13 @@
  			default-state = "off";
  			function = LED_FUNCTION_LAN;
- 			gpios = <&gpio4 RK_PB1 GPIO_ACTIVE_HIGH>;
+ 			gpios = <&gpio4 RK_PB3 GPIO_ACTIVE_HIGH>;
 -			linux,default-trigger = "netdev";
  		};
  
@@ -52,7 +52,7 @@ button behaves.
 @@ -80,7 +83,6 @@
  			default-state = "off";
  			function = LED_FUNCTION_WAN;
- 			gpios = <&gpio4 RK_PB3 GPIO_ACTIVE_HIGH>;
+ 			gpios = <&gpio4 RK_PB1 GPIO_ACTIVE_HIGH>;
 -			linux,default-trigger = "netdev";
  		};
  	};

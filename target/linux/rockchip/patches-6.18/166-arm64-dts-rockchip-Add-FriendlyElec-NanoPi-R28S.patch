@@ -103,7 +103,7 @@ E20C, which has the same GMAC + PCIe-Ethernet topology.
 +			color = <LED_COLOR_ID_GREEN>;
 +			default-state = "off";
 +			function = LED_FUNCTION_LAN;
-+			gpios = <&gpio4 RK_PB1 GPIO_ACTIVE_HIGH>;
++			gpios = <&gpio4 RK_PB3 GPIO_ACTIVE_HIGH>;
 +			linux,default-trigger = "netdev";
 +		};
 +
@@ -119,7 +119,7 @@ E20C, which has the same GMAC + PCIe-Ethernet topology.
 +			color = <LED_COLOR_ID_GREEN>;
 +			default-state = "off";
 +			function = LED_FUNCTION_WAN;
-+			gpios = <&gpio4 RK_PB3 GPIO_ACTIVE_HIGH>;
++			gpios = <&gpio4 RK_PB1 GPIO_ACTIVE_HIGH>;
 +			linux,default-trigger = "netdev";
 +		};
 +	};
@@ -314,7 +314,7 @@ E20C, which has the same GMAC + PCIe-Ethernet topology.
 +
 +	leds {
 +		lan_led_g: lan-led-g {
-+			rockchip,pins = <4 RK_PB1 RK_FUNC_GPIO &pcfg_pull_none>;
++			rockchip,pins = <4 RK_PB3 RK_FUNC_GPIO &pcfg_pull_none>;
 +		};
 +
 +		sys_led_r: sys-led-r {
@@ -322,7 +322,7 @@ E20C, which has the same GMAC + PCIe-Ethernet topology.
 +		};
 +
 +		wan_led_g: wan-led-g {
-+			rockchip,pins = <4 RK_PB3 RK_FUNC_GPIO &pcfg_pull_none>;
++			rockchip,pins = <4 RK_PB1 RK_FUNC_GPIO &pcfg_pull_none>;
 +		};
 +	};
 +
