@@ -98,8 +98,8 @@ jobs:
           NET=target/linux/rockchip/base-files/etc/board.d/02_network
           grep -q 'friendlyarm,nanopi-r28s' "$NET" 2>/dev/null \
             || { echo "::error::$NET has no friendlyarm,nanopi-r28s entry"; fail=1; }
-          grep -q 'ucidef_set_interfaces_lan_wan "eth0" "eth1"' "$NET" 2>/dev/null \
-            || { echo "::error::$NET does not assign LAN/WAN unconditionally"; fail=1; }
+          grep -q 'ucidef_set_interfaces_lan_wan "eth1" "eth0"' "$NET" 2>/dev/null \
+            || { echo "::error::$NET does not assign LAN=eth1 / WAN=eth0 unconditionally"; fail=1; }
           # Without this the build falls back to the default UBOOT_DEVICE_NAME
           # (nanopi-r28s-rk3528), for which U-Boot has no defconfig at all.
           grep -q 'UBOOT_DEVICE_NAME := nanopi-zero2-rk3528' target/linux/rockchip/image/armv8.mk \

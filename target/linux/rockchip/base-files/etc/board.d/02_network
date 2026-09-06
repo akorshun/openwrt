@@ -11,7 +11,12 @@ rockchip_setup_interfaces()
 
 	case "$board" in
 	friendlyarm,nanopi-r28s)
-		ucidef_set_interfaces_lan_wan "eth0" "eth1"
+		# eth0 is the on-SoC GMAC (RTL8211F) and reaches the jack nearest
+		# the SoC, which the case labels WAN; eth1 is the RTL8111H behind
+		# the PCIe controller and is the LAN jack. Same way round as the
+		# other FriendlyElec R-series boards - see the NanoPi R1 in the
+		# sunxi target.
+		ucidef_set_interfaces_lan_wan "eth1" "eth0"
 		;;
 	esac
 }
