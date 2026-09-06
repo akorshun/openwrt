@@ -1,0 +1,397 @@
+name: Build FriendlyElec NanoPi R28S 25.12.5
+# Builds rockchip/armv8 images for the FriendlyElec NanoPi R28S (RK3528A) from
+# this branch: OpenWrt 25.12.5 plus the board support backported from main,
+# where it has been running on hardware since tag nanopi-r28s-r6.
+#
+# The kernel config is seeded from the official 25.12.5 config.buildinfo and
+# nothing on this branch adds a CONFIG_ symbol - the board is a device tree,
+# an image recipe, a U-Boot variant and two board.d entries - so the computed
+# vermagic must come out identical to the published one. It is asserted, never
+# forced: a mismatch fails the run before the packages are built, because an
+# image whose distfeeds.list points at a kmods feed it cannot use is worse
+# than no image.
+#
+# Runs only on tag pushes (or manual dispatch) - never on ordinary pushes to
+# the branch: the upstream kernel/packages/toolchain/tools/push-containers
+# workflows have this branch in branches-ignore. Every run publishes its
+# images as a GitHub release.
+#
+# The tag pattern is deliberately not 'v*': the stock github-release.yml
+# inherited from upstream fires on 'v*' and would race this workflow for the
+# same release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      verbose:
+        description: "Verbose make (V=s)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  push:
+    tags:
+      - 'nanopi-r28s-25.12.5-*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEVICE: friendlyarm_nanopi-r28s
+  TARGET_DIR: bin/targets/rockchip/armv8
+  DTS: rk3528-nanopi-r28s
+  # Published in targets/rockchip/armv8/kmods/ for 25.12.5. The build must
+  # arrive at this value on its own; see the vermagic step below.
+  EXPECTED_KERNEL: 6.12.94-1
+  EXPECTED_VERMAGIC: 5fab3a97d147fbf8146094eeebd78fd9
+
+jobs:
+  build:
+    name: rockchip/armv8 friendlyarm_nanopi-r28s (25.12.5)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Maximize build space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/share/swift || true
+          sudo docker image prune --all --force || true
+          sudo apt-get clean || true
+          df -h
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses-dev libssl-dev python3-setuptools \
+            python3-dev python3 python3-pyelftools rsync swig unzip zlib1g-dev \
+            file wget zstd ccache ecj fastjar java-propose-classpath libelf-dev \
+            libncursesw5-dev libdw-dev liblz4-dev libzstd-dev libxml-parser-perl \
+            device-tree-compiler
+          # uboot-rockchip sets UBOOT_USE_BINMAN, and binman needs pyelftools
+          # importable by the host python. Without it the build dies in
+          # `make download` on a prereq check several minutes in; fail here
+          # instead, where the message points at the package.
+          python3 -c 'import elftools' \
+            || { echo "::error::python3-pyelftools is not importable - U-Boot binman needs it"; exit 1; }
+
+      - name: Assert the R28S support is in the tree
+        # Cheap source-level check before the expensive part.
+        run: |
+          fail=0
+          chk() { [ -e "$1" ] || { echo "::error::missing $1"; fail=1; }; }
+          PD=target/linux/rockchip/patches-6.12
+          chk "$PD/166-arm64-dts-rockchip-Add-FriendlyElec-NanoPi-R28S.patch"
+          chk "$PD/167-arm64-dts-rockchip-Update-LED-properties-for-NanoPi-R28S.patch"
+          chk target/linux/rockchip/armv8/base-files/etc/apk/repositories.d/distfeeds.list
+          grep -q '^define Device/friendlyarm_nanopi-r28s$' target/linux/rockchip/image/armv8.mk \
+            || { echo "::error::armv8.mk has no Device/friendlyarm_nanopi-r28s"; fail=1; }
+          # U-Boot 2025.10 has no NanoPi Zero2 defconfig, which is what main
+          # uses; on this branch the board must ride on generic-rk3528.
+          grep -q 'UBOOT_DEVICE_NAME := generic-rk3528' target/linux/rockchip/image/armv8.mk \
+            || { echo "::error::armv8.mk does not point the R28S at generic-rk3528"; fail=1; }
+          grep -q '^define U-Boot/generic-rk3528$' package/boot/uboot-rockchip/Makefile \
+            || { echo "::error::uboot-rockchip has no generic-rk3528 variant"; fail=1; }
+          grep -q '^  generic-rk3528 \\$' package/boot/uboot-rockchip/Makefile \
+            || { echo "::error::generic-rk3528 is not in UBOOT_TARGETS"; fail=1; }
+          # The subtarget board.d ends in a `*) ucidef_set_interface_lan eth0`
+          # default that sets a network object and no WAN, which then makes
+          # 99-default_network bail out too. A board missing from here boots
+          # with LAN only and no second port at all.
+          NET=target/linux/rockchip/armv8/base-files/etc/board.d/02_network
+          LEDS=target/linux/rockchip/armv8/base-files/etc/board.d/01_leds
+          grep -q 'friendlyarm,nanopi-r28s' "$NET" \
+            || { echo "::error::$NET has no friendlyarm,nanopi-r28s entry"; fail=1; }
+          grep -q 'friendlyarm,nanopi-r28s' "$LEDS" \
+            || { echo "::error::$LEDS has no friendlyarm,nanopi-r28s entry"; fail=1; }
+          # ...and in the right group: LAN on the PCIe NIC, WAN on the GMAC.
+          awk '/friendlyarm,nanopi-r28s/ { f=1 }
+               f && /ucidef_set_interfaces_lan_wan/ { print; exit }' "$NET" \
+            | grep -q "ucidef_set_interfaces_lan_wan 'eth1' 'eth0'" \
+            || { echo "::error::the R28S is not in the LAN=eth1/WAN=eth0 group of $NET"; fail=1; }
+          # base-files installs PLATFORM_SUBDIR over PLATFORM_DIR, so a copy at
+          # the target level is silently overwritten by the armv8 one. That
+          # cost a release on main; do not let it happen here.
+          if [ -e target/linux/rockchip/base-files/etc/board.d/02_network ]; then
+            echo "::error::target-level board.d/02_network exists - armv8 shadows it, move the entry there"
+            fail=1
+          fi
+          # This branch must not touch the kernel config: that is what keeps
+          # the vermagic equal to the official one. The checkout is shallow
+          # and the fork carries no v25.12.5 tag, so fetch the release commit
+          # by hash; the vermagic step later is the real gate.
+          BASE=f0a60eee2fe051741c643ea6118718aae1ef17fb  # v25.12.5
+          git fetch -q --depth=1 origin "$BASE" 2>/dev/null || true
+          if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            if git diff --quiet "$BASE" HEAD -- target/linux/rockchip/armv8/config-6.12 target/linux/generic/config-6.12; then
+              echo "kernel config untouched since v25.12.5"
+            else
+              echo "::error::kernel config differs from v25.12.5 - the vermagic will not match"; fail=1
+            fi
+          else
+            echo "::warning::could not fetch the v25.12.5 commit, skipping the config diff (vermagic is asserted later)"
+          fi
+          [ "$fail" = 0 ] || exit 1
+          echo "R28S support present"
+
+      - name: Update feeds
+        run: |
+          # git.openwrt.org answers 504 now and then; a failed clone leaves
+          # a half-empty feed behind, so retry the update from scratch.
+          for i in 1 2 3 4; do
+            ./scripts/feeds update -a && break
+            echo "feeds update failed (attempt $i), retrying"
+            rm -rf feeds
+            sleep 30
+          done
+          ./scripts/feeds install -a
+
+      - name: Configure build (official 25.12.5 config, NanoPi R28S only)
+        run: |
+          cp .github/workflows/config/friendlyarm-nanopi-r28s.config .config
+          echo 'CONFIG_BUILD_LOG=y' >> .config
+          make defconfig
+
+          echo "----- selected target/device -----"
+          grep -E '^CONFIG_TARGET_(BOARD|SUBTARGET|ARCH_PACKAGES)' .config || true
+          grep -E 'r28s' .config || true
+
+          fail=0
+          grep -qE "^CONFIG_TARGET(_DEVICE)?_rockchip_armv8_DEVICE_${DEVICE}=y" .config \
+            || { echo "::error::${DEVICE} is not selected after defconfig"; fail=1; }
+          grep -qx 'CONFIG_ALL_KMODS=y' .config || { echo "::error::CONFIG_ALL_KMODS lost"; fail=1; }
+          grep -qx 'CONFIG_PACKAGE_luci=y' .config \
+            || { echo "::error::CONFIG_PACKAGE_luci did not survive defconfig - is the luci feed installed?"; fail=1; }
+          # The LAN port hangs off PCIe; without r8169 the board comes up with
+          # one working interface and looks like a DT problem.
+          grep -qE '^CONFIG_PACKAGE_kmod-r8169=[ym]' .config \
+            || { echo "::error::kmod-r8169 is not selected - the PCIe port would have no driver"; fail=1; }
+
+          # include/kernel-defaults.mk copies every CONFIG_KERNEL_* symbol into
+          # the kernel config, so each one is part of the ABI the official
+          # kmods were built against. config.buildinfo is a diffconfig -
+          # anything it states must be present verbatim here.
+          curl -fsSL --retry 3 -o /tmp/config.buildinfo \
+            "https://downloads.openwrt.org/releases/25.12.5/targets/rockchip/armv8/config.buildinfo"
+          { grep -E '^(# )?CONFIG_KERNEL_' /tmp/config.buildinfo \
+            | grep -vE 'CONFIG_KERNEL_BUILD_(USER|DOMAIN)' || true; } > /tmp/kernel-opts.want
+          echo "official CONFIG_KERNEL_* deviations:"
+          cat /tmp/kernel-opts.want
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            grep -qxF -- "$line" .config \
+              || { echo "::error::official kernel option not in our .config: $line"; fail=1; }
+          done < /tmp/kernel-opts.want
+          [ "$fail" = 0 ] || exit 1
+          echo "device selected, LuCI included, kernel options match the buildbot"
+
+      - name: Download sources
+        run: make download -j8
+
+      - name: Build tools
+        run: |
+          make tools/install -j$(nproc) \
+            ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
+            make tools/install -j1 V=s
+
+      - name: Build toolchain
+        run: |
+          make toolchain/install -j$(nproc) \
+            ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
+            make toolchain/install -j1 V=s
+
+      - name: Prepare the kernel tree
+        # Applies the target patches. Doing this as its own step means a DTS
+        # patch that no longer applies fails here, with a readable log, instead
+        # of somewhere inside a several-hour build.
+        run: |
+          make target/linux/prepare -j$(nproc) V=s 2>&1 | tail -80
+          KSRC=$(find build_dir/target-* -maxdepth 2 -type d -name 'linux-6.12*' | head -1)
+          [ -n "$KSRC" ] || { echo "::error::prepared kernel tree not found"; exit 1; }
+          DTSF="$KSRC/arch/arm64/boot/dts/rockchip/${DTS}.dts"
+          [ -f "$DTSF" ] \
+            || { echo "::error::${DTS}.dts is not in the prepared tree - patch 166 did not apply"; exit 1; }
+          grep -q "${DTS}.dtb" "$KSRC/arch/arm64/boot/dts/rockchip/Makefile" \
+            || { echo "::error::${DTS}.dtb is not in the kernel dts Makefile - the DTB would never be built"; exit 1; }
+          grep -q 'led-boot = &sys_led;' "$DTSF" \
+            || { echo "::error::the OpenWrt LED aliases are missing - patch 167 did not apply"; exit 1; }
+          echo "both DTS patches applied"
+
+      - name: Build kernel and modules
+        # No -j1 V=s retry here: with CONFIG_ALL_KMODS=y a serial rebuild of
+        # every module would blow the job timeout; the build log is uploaded
+        # on failure instead.
+        run: make target/linux/compile -j$(nproc) ${{ inputs.verbose == 'true' && 'V=s' || '' }}
+
+      - name: Assert vermagic matches the published 25.12.5 feed
+        # The kernel is configured and built by now, which is the first point
+        # at which .vermagic exists - a mismatch means the remaining hours
+        # would produce an image whose distfeeds.list points at a kmods feed
+        # it cannot use.
+        run: |
+          VM=$(find build_dir -name '.vermagic' 2>/dev/null | head -1)
+          [ -n "$VM" ] || { echo "::error::no .vermagic found in build_dir"; exit 1; }
+          ACTUAL=$(cat "$VM")
+          echo "computed vermagic: $ACTUAL"
+          echo "expected vermagic: $EXPECTED_VERMAGIC"
+          if [ "$ACTUAL" != "$EXPECTED_VERMAGIC" ]; then
+            echo "::error::vermagic is $ACTUAL, expected $EXPECTED_VERMAGIC"
+            echo "The kernel config drifted from the official one; compare against"
+            echo "https://downloads.openwrt.org/releases/25.12.5/targets/rockchip/armv8/config.buildinfo"
+            exit 1
+          fi
+          echo "vermagic OK"
+
+      - name: Build firmware
+        run: make -j$(nproc) ${{ inputs.verbose == 'true' && 'V=s' || '' }}
+
+      - name: Verify the built DTB
+        # The DTB is the whole port. Check the compiled one really describes
+        # this board and really enables the three things that make it useful:
+        # the RGMII port, the PCIe port the LAN jack hangs off, and the
+        # combphy that PCIe needs.
+        run: |
+          KDTB=$(find build_dir -name "image-${DTS}.dtb" 2>/dev/null | head -1)
+          [ -n "$KDTB" ] || KDTB=$(find build_dir -name "${DTS}.dtb" 2>/dev/null | head -1)
+          [ -n "$KDTB" ] || { echo "::error::no ${DTS}.dtb found in build_dir"; exit 1; }
+          echo "DTB: $KDTB"
+          fail=0
+          dtc -I dtb -O dts "$KDTB" > /tmp/r28s.dts 2>/dev/null \
+            || { echo "::error::the DTB does not decompile"; exit 1; }
+
+          grep -q 'model = "FriendlyElec NanoPi R28S"' /tmp/r28s.dts \
+            || { echo "::error::DTB model string is wrong"; fail=1; }
+
+          # A node that stayed "disabled" is the failure mode to catch: the
+          # image still builds and boots, the port is just silently absent.
+          node_ok() {
+            awk -v n="$1" '
+              $0 ~ "^\t*"n" \\{" { d=1 }
+              d && /status = "okay"/ { found=1 }
+              d && /^\t*\};/ { d=0 }
+              END { exit !found }
+            ' /tmp/r28s.dts
+          }
+          for n in "ethernet@ffbe0000" "pcie@fe000000" "phy@ffdc0000"; do
+            node_ok "$n" || { echo "::error::$n is not enabled in the DTB"; fail=1; }
+          done
+          [ "$fail" = 0 ] || exit 1
+          echo "DTB describes the R28S with gmac1, pcie and combphy enabled"
+
+      - name: Verify the shipped kmods feed line
+        run: |
+          DF=$(find build_dir -path '*/etc/apk/repositories.d/distfeeds.list' 2>/dev/null | head -1)
+          [ -n "$DF" ] || { echo "::error::generated distfeeds.list not found"; exit 1; }
+          echo "----- generated distfeeds.list -----"
+          cat "$DF"
+          # The static line ships a hardcoded kernel version and vermagic;
+          # keep it honest.
+          WANT="/targets/rockchip/armv8/kmods/${EXPECTED_KERNEL}-${EXPECTED_VERMAGIC}/packages.adb"
+          grep -qF "$WANT" "$DF" || { echo "::error::distfeeds.list does not carry $WANT"; exit 1; }
+          echo "kmods feed line OK"
+
+      - name: List output
+        if: always()
+        run: |
+          echo "----- ${TARGET_DIR} -----"
+          ls -lh "${TARGET_DIR}/" || true
+          df -h
+
+      - name: Collect artifacts
+        if: success()
+        run: |
+          mkdir -p artifacts
+          cp -v "${TARGET_DIR}"/*nanopi-r28s* artifacts/ 2>/dev/null || true
+          cp -v "${TARGET_DIR}"/sha256sums artifacts/ 2>/dev/null || true
+          cp -v "${TARGET_DIR}"/profiles.json artifacts/ 2>/dev/null || true
+          cp -v .config artifacts/build.config 2>/dev/null || true
+          # CONFIG_ALL_KMODS=y means this build produced the whole kernel
+          # module set itself. Ship it: same source, same config, same
+          # vermagic. There is no local kmods/ directory - that path only
+          # exists on downloads.openwrt.org, where the buildbot rsyncs them;
+          # locally every package lands in ${TARGET_DIR}/packages together
+          # with the apk index the feed needs.
+          PKGDIR="${TARGET_DIR}/packages"
+          if [ -d "$PKGDIR" ] && ls "$PKGDIR"/kmod-*.apk >/dev/null 2>&1; then
+            echo "kmod packages: $(ls "$PKGDIR"/kmod-*.apk | wc -l), total $(du -sh "$PKGDIR" | cut -f1)"
+            tar -czf "artifacts/kmods-${EXPECTED_KERNEL}-${EXPECTED_VERMAGIC}.tar.gz" -C "$PKGDIR" .
+          else
+            echo "::error::no kmod packages found under $PKGDIR"
+            exit 1
+          fi
+          ls -lh artifacts/
+          ls artifacts/ | grep -q 'sysupgrade.img.gz' \
+            || { echo "::error::no sysupgrade image was produced"; exit 1; }
+
+      - name: Upload firmware artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanopi-r28s-25.12.5-${{ github.ref_name }}
+          path: artifacts/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('nanopi-r28s-25.12.5-build-{0}', github.run_number) }}
+          name: FriendlyElec NanoPi R28S - OpenWrt 25.12.5 (${{ github.ref_name }})
+          files: artifacts/*
+          body: |
+            OpenWrt **25.12.5** for the **FriendlyElec NanoPi R28S** (Rockchip RK3528A).
+
+            Built from `${{ github.sha }}`, branch `openwrt-25.12-friendlyarm-nanopi-r28s`
+            - the 25.12.5 release plus the board support backported from main, where
+            it has been verified on hardware.
+
+            ### Flashing
+
+            Write `*-squashfs-sysupgrade.img.gz` (gunzipped) to a microSD card and boot
+            from it. The board can also be put in maskrom mode with the MASK button and
+            flashed to eMMC over the USB-C port with `rkdeveloptool`.
+
+            Serial console is the debug USB-C jack, **1500000 8N1** - not 115200.
+
+            ### Ports
+
+            * **WAN** is the jack on the on-SoC GMAC (RTL8211F), **LAN** the one behind
+              the PCIe controller (RTL8111H). MAC addresses are derived from the card ID,
+              so they are stable across reboots but travel with the card.
+            * **Wi-Fi 6 / Bluetooth are not supported.** The on-board AIC8800D80 has no
+              mainline driver. There is no `wlan0`.
+            * The USB-C jack is 5 V input plus maskrom/eMMC flashing only; it is
+              configured device-only. There is no USB host port.
+
+            ### kmod packages
+
+            The kernel config here is the official 25.12.5 one, and the build asserts
+            its vermagic equals the published `${{ env.EXPECTED_KERNEL }}-${{ env.EXPECTED_VERMAGIC }}`,
+            so **kmod-\* packages from the official 25.12.5 feed install as-is**. The
+            image ships that feed in `/etc/apk/repositories.d/distfeeds.list`.
+            `kmods-*.tar.gz` here is the same module set built alongside the image, for
+            offline installs.
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.ref_name }}
+          path: |
+            logs/
+            .config
+          retention-days: 14
+          if-no-files-found: ignore

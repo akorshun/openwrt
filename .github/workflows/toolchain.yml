@@ -11,6 +11,7 @@ on:
       - 'toolchain/**'
     branches-ignore:
       - master
+      - openwrt-25.12-friendlyarm-nanopi-r28s
 
 permissions:
   contents: read
