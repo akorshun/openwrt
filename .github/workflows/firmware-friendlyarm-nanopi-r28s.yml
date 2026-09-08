@@ -115,12 +115,12 @@ jobs:
           fi
           # Without this the build falls back to the default UBOOT_DEVICE_NAME
           # (nanopi-r28s-rk3528), for which U-Boot has no defconfig at all.
-          grep -q 'UBOOT_DEVICE_NAME := nanopi-zero2-rk3528' target/linux/rockchip/image/armv8.mk \
-            || { echo "::error::armv8.mk does not point the R28S at the NanoPi Zero2 U-Boot"; fail=1; }
-          grep -q '^define U-Boot/nanopi-zero2-rk3528$' package/boot/uboot-rockchip/Makefile \
-            || { echo "::error::uboot-rockchip has no nanopi-zero2-rk3528 variant"; fail=1; }
-          grep -q '^  nanopi-zero2-rk3528 \\$' package/boot/uboot-rockchip/Makefile \
-            || { echo "::error::nanopi-zero2-rk3528 is not in UBOOT_TARGETS"; fail=1; }
+          grep -q 'UBOOT_DEVICE_NAME := generic-rk3528' target/linux/rockchip/image/armv8.mk \
+            || { echo "::error::armv8.mk does not point the R28S at the generic RK3528 U-Boot"; fail=1; }
+          grep -q '^define U-Boot/generic-rk3528$' package/boot/uboot-rockchip/Makefile \
+            || { echo "::error::uboot-rockchip has no generic-rk3528 variant"; fail=1; }
+          grep -q '^  generic-rk3528 \\$' package/boot/uboot-rockchip/Makefile \
+            || { echo "::error::generic-rk3528 is not in UBOOT_TARGETS"; fail=1; }
           [ "$fail" = 0 ] || exit 1
           echo "R28S support present"
 
