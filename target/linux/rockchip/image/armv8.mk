@@ -100,7 +100,7 @@ define Device/friendlyarm_nanopi-r28s
   $(Device/rk3528)
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi R28S
-  UBOOT_DEVICE_NAME := nanopi-zero2-rk3528
+  UBOOT_DEVICE_NAME := generic-rk3528
   DEVICE_PACKAGES := kmod-button-hotplug kmod-input-adc-keys kmod-r8169
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r28s

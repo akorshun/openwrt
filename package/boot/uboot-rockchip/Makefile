@@ -181,6 +181,13 @@ define U-Boot/rk3528/Default
   TPL:=rk3528_ddr_1056MHz_v1.11.bin
 endef
 
+define U-Boot/generic-rk3528
+  $(U-Boot/rk3528/Default)
+  NAME:=Generic RK3528
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r28s
+endef
+
 define U-Boot/hinlink-h28k-rk3528
   $(U-Boot/rk3528/Default)
   NAME:=HINLINK H28K
@@ -192,13 +199,6 @@ endef
 # bring up DRAM and the SD/eMMC controller here - the kernel FIT carries the
 # right board DTB - and the R28S shares that part of the design with the
 # NanoPi Zero2, so its defconfig is used as-is.
-define U-Boot/nanopi-zero2-rk3528
-  $(U-Boot/rk3528/Default)
-  NAME:=NanoPi Zero2/R28S
-  BUILD_DEVICES:= \
-    friendlyarm_nanopi-r28s
-endef
-
 define U-Boot/radxa-e20c-rk3528
   $(U-Boot/rk3528/Default)
   NAME:=E20C
@@ -467,8 +467,8 @@ UBOOT_TARGETS := \
   rock64-rk3328 \
   rock-pi-e-rk3328 \
   rock-pi-e-v3-rk3328 \
+  generic-rk3528 \
   hinlink-h28k-rk3528 \
-  nanopi-zero2-rk3528 \
   radxa-e20c-rk3528 \
   rock-2-rk3528 \
   nanopi-r3s-rk3566 \
