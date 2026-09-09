@@ -30,7 +30,11 @@ never comes up. __mdiobus_register() drives the bus level reset-gpios
 before any device on the bus is registered.
 
 Support for this board is being upstreamed by 安容
-<HystericalDragons@proton.me>; this patch will be dropped when it lands:
+<HystericalDragons@proton.me>. A new board's device tree is not stable
+material, so it will not reach 6.18.y; once that series is applied this
+patch should give way to a backport of it, named for the release it lands
+in like the other -vX.Y- patches here, and disappear when this target
+moves past that release.
 https://lore.kernel.org/r/20260909-r28s-upstream-v3-0-ee3e1a34a353@proton.me
 ---
  arch/arm64/boot/dts/rockchip/Makefile         |   1 +
