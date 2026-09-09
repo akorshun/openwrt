@@ -17,12 +17,25 @@ Specification:
 - 1x USB 2.0 Type-C (5V in, maskrom/eMMC flashing)
 - Debug UART on uart0 behind a USB-UART bridge
 
-Not yet submitted upstream; the board is too new. Modelled on the Radxa
-E20C, which has the same GMAC + PCIe-Ethernet topology.
+Modelled on the Radxa E20C, which has the same GMAC + PCIe-Ethernet
+topology.
+
+The RGMII PHY reset is described on the MDIO bus rather than in the PHY
+node. __of_mdiobus_register() registers the bus before walking its
+children, and for a PHY node with only the generic c22 compatible,
+fwnode_mdiobus_register_phy() reads the PHY ID with get_phy_device()
+before phy_device_register() gets as far as requesting reset-gpios, so
+a PHY the bootloader left in reset is reported missing and the port
+never comes up. __mdiobus_register() drives the bus level reset-gpios
+before any device on the bus is registered.
+
+Support for this board is being upstreamed by 安容
+<HystericalDragons@proton.me>; this patch will be dropped when it lands:
+https://lore.kernel.org/r/20260909-r28s-upstream-v3-0-ee3e1a34a353@proton.me
 ---
  arch/arm64/boot/dts/rockchip/Makefile         |   1 +
- .../boot/dts/rockchip/rk3528-nanopi-r28s.dts  | 400 +++++++++++++++
- 2 files changed, 401 insertions(+)
+ .../boot/dts/rockchip/rk3528-nanopi-r28s.dts  | 393 +++++++++++++++
+ 2 files changed, 394 insertions(+)
  create mode 100644 arch/arm64/boot/dts/rockchip/rk3528-nanopi-r28s.dts
 
 --- a/arch/arm64/boot/dts/rockchip/Makefile
@@ -37,7 +50,7 @@ E20C, which has the same GMAC + PCIe-Ethernet topology.
  dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3528-rock-2a.dtb
 --- /dev/null
 +++ b/arch/arm64/boot/dts/rockchip/rk3528-nanopi-r28s.dts
-@@ -0,0 +1,400 @@
+@@ -0,0 +1,393 @@
 +// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 +/*
 + * Copyright (c) 2026 FriendlyElec Computer Tech. Co., Ltd.
@@ -256,17 +269,6 @@ E20C, which has the same GMAC + PCIe-Ethernet topology.
 +	pinctrl-names = "default";
 +	pinctrl-0 = <&rgmii_miim>, <&rgmii_tx_bus2>, <&rgmii_rx_bus2>,
 +		    <&rgmii_rgmii_clk>, <&rgmii_rgmii_bus>, <&gmac1_rstn_l>;
-+	/*
-+	 * The PHY reset has to be driven by the MAC, not described in the PHY
-+	 * node: the MDIO core only fetches a PHY node's reset-gpios in
-+	 * phy_device_register(), long after get_phy_device() has already read
-+	 * the PHY ID, so a PHY still held in reset is simply reported missing.
-+	 * stmmac hands this to mii_bus->reset instead, which runs before the
-+	 * bus is scanned - and defers the whole probe while gpio4 is not up.
-+	 */
-+	snps,reset-active-low;
-+	snps,reset-delays-us = <0 20000 100000>;
-+	snps,reset-gpio = <&gpio4 RK_PC2 GPIO_ACTIVE_LOW>;
 +	status = "okay";
 +};
 +
@@ -293,6 +295,10 @@ E20C, which has the same GMAC + PCIe-Ethernet topology.
 +};
 +
 +&mdio1 {
++	reset-delay-us = <20000>;
++	reset-gpios = <&gpio4 RK_PC2 GPIO_ACTIVE_LOW>;
++	reset-post-delay-us = <100000>;
++
 +	rgmii_phy: ethernet-phy@1 {
 +		compatible = "ethernet-phy-ieee802.3-c22";
 +		reg = <0x1>;
