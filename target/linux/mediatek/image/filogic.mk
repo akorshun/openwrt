@@ -1932,7 +1932,7 @@ define Device/glinet_gl-be14000-common
   DEVICE_PACKAGES := kmod-mt7996-233-firmware kmod-hwmon-pwmfan kmod-usb3 \
 	kmod-backlight-pwm kmod-drm-panel-mipi-dbi glinet-panel-firmware \
 	kmod-input-touchscreen-cst353x kmod-input-evdev \
-	rtl8261c-firmware e2fsprogs f2fsck mkf2fs
+	mt7988-wo-firmware rtl8261c-firmware e2fsprogs f2fsck mkf2fs
 endef
 
 define Device/glinet_gl-be14000

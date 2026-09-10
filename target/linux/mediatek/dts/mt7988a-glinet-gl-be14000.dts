@@ -221,6 +221,7 @@
 
 &gmac1 {
 	phy-mode = "usxgmii";
+	phy-connection-type = "usxgmii";
 	status = "okay";
 
 	fixed-link {
@@ -228,6 +229,10 @@
 		full-duplex;
 		pause;
 	};
+};
+
+&usxgmiisys1 {
+	mediatek,force-fixed-10g;
 };
 
 &gmac2 {
@@ -266,6 +271,8 @@
 };
 
 &mdio_bus {
+	clock-frequency = <10500000>;
+
 	phy0: ethernet-phy@0 {
 		/* external multi-gig PHY (c45) */
 		compatible = "ethernet-phy-ieee802.3-c45";
@@ -284,7 +291,9 @@
 
 		reset-gpios = <&pio 0 GPIO_ACTIVE_LOW>;
 		reset-assert-us = <50000>;
-		reset-deassert-us = <50000>;
+		reset-deassert-us = <200000>;
+		interrupt-parent = <&pio>;
+		interrupts = <3 IRQ_TYPE_LEVEL_LOW>;
 
 		ports {
 			#address-cells = <1>;
@@ -301,34 +310,34 @@
 				reg = <4>;
 				label = "lan1";
 				phy-mode = "internal";
-				phy-handle = <&yt9224_phy0>;
+				phy-handle = <&yt8824_phy4>;
 			};
 
 			port@5 {
 				reg = <5>;
 				label = "lan2";
 				phy-mode = "internal";
-				phy-handle = <&yt9224_phy1>;
+				phy-handle = <&yt8824_phy5>;
 			};
 
 			port@6 {
 				reg = <6>;
 				label = "lan3";
 				phy-mode = "internal";
-				phy-handle = <&yt9224_phy2>;
+				phy-handle = <&yt8824_phy6>;
 			};
 
 			port@7 {
 				reg = <7>;
 				label = "lan4";
 				phy-mode = "internal";
-				phy-handle = <&yt9224_phy3>;
+				phy-handle = <&yt8824_phy7>;
 			};
 
 			port@0 {
 				reg = <0>;
 				label = "sfp";
-				phy-mode = "usxgmii";
+				phy-mode = "10gbase-r";
 				managed = "in-band-status";
 				sfp = <&sfp_yt9224>;
 			};
@@ -337,6 +346,7 @@
 				reg = <8>;
 				label = "cpu";
 				ethernet = <&gmac1>;
+				dsa-tag-protocol = "yt922x_4b";
 				phy-mode = "usxgmii";
 
 				fixed-link {
@@ -351,20 +361,27 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 
-			yt9224_phy0: ethernet-phy@0 {
-				reg = <0>;
-			};
+			ethernet-phy-package@4 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				reg = <4>;
+				motorcomm,interface-mode = "internal";
 
-			yt9224_phy1: ethernet-phy@1 {
-				reg = <1>;
-			};
+				yt8824_phy4: ethernet-phy@4 {
+					reg = <4>;
+				};
 
-			yt9224_phy2: ethernet-phy@2 {
-				reg = <2>;
-			};
+				yt8824_phy5: ethernet-phy@5 {
+					reg = <5>;
+				};
 
-			yt9224_phy3: ethernet-phy@3 {
-				reg = <3>;
+				yt8824_phy6: ethernet-phy@6 {
+					reg = <6>;
+				};
+
+				yt8824_phy7: ethernet-phy@7 {
+					reg = <7>;
+				};
 			};
 		};
 	};
