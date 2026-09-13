@@ -11,6 +11,7 @@ on:
       - 'toolchain/**'
     branches-ignore:
       - master
+      - openwrt-25.12-widora-mangopi-m28k
 
 permissions:
   contents: read
