@@ -69,7 +69,8 @@ friendlyarm,nanopi-r6s)
 	set_interface_core 40 "eth2"
 	;;
 hinlink,h28k|\
-radxa,e20c)
+radxa,e20c|\
+widora,mangopi-m28k)
 	set_interface_core 2 "eth0"
 	;;
 radxa,rock-5a|\
