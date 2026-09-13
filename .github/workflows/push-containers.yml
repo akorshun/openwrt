@@ -10,6 +10,7 @@ on:
       - 'toolchain/**'
     branches-ignore:
       - master
+      - main-widora-mangopi-m28k
 
 permissions:
   contents: read
