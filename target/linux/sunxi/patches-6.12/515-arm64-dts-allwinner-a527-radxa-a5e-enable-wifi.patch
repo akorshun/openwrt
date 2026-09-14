@@ -1,0 +1,81 @@
+From: Andrey Korshunov <razor1702@gmail.com>
+Subject: arm64: dts: allwinner: a527: radxa-a5e: enable the SDIO Wi-Fi
+
+The Cubie A5E has an AIC8800D80 Wi-Fi/BT module (LB-LINK BL-M8800DS2)
+on mmc1, but mmc1 was left disabled, so the card never showed up and a
+driver had nothing to bind to.
+
+The pins are the ones Radxa's BSP device tree uses for this board: PL7
+switches the module's 3.3 V supply, PM1 is WL_REG_ON, and BLDO1 (1.8 V)
+is its I/O rail. The node layout follows Armbian's Cubie A5E Wi-Fi
+patches, which were tested on the board; the clock is capped at 35 MHz
+as ImmortalWrt does, since data errors were seen above 40 MHz.
+
+The mmc aliases keep the SD card on mmc0 now that a second host probes.
+
+--- a/arch/arm64/boot/dts/allwinner/sun55i-a527-radxa-a5e.dts
++++ b/arch/arm64/boot/dts/allwinner/sun55i-a527-radxa-a5e.dts
+@@ -16,6 +16,8 @@
+ 	aliases {
+ 		ethernet0 = &gmac0;
+ 		ethernet1 = &gmac1;
++		mmc0 = &mmc0;
++		mmc1 = &mmc1;
+ 		serial0 = &uart0;
+ 	};
+ 
+@@ -65,6 +67,22 @@
+ 		gpio = <&r_pio 0 8 GPIO_ACTIVE_HIGH>;	/* PL8 */
+ 		enable-active-high;
+ 	};
++
++	reg_3v3_wifi: 3v3-wifi {
++		compatible = "regulator-fixed";
++		regulator-name = "3v3-wifi";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		vin-supply = <&reg_vcc5v>;
++		gpio = <&r_pio 0 7 GPIO_ACTIVE_HIGH>;	/* PL7 */
++		enable-active-high;
++	};
++
++	wifi_pwrseq: wifi-pwrseq {
++		compatible = "mmc-pwrseq-simple";
++		reset-gpios = <&r_pio 1 1 GPIO_ACTIVE_LOW>;	/* PM1, WL_REG_ON */
++		post-power-on-delay-ms = <200>;
++	};
+ };
+ 
+ &cpu0 {
+@@ -145,6 +163,22 @@
+ 	status = "okay";
+ };
+ 
++/* AIC8800D80 SDIO Wi-Fi module */
++&mmc1 {
++	vmmc-supply = <&reg_3v3_wifi>;
++	vqmmc-supply = <&reg_bldo1>;
++	mmc-pwrseq = <&wifi_pwrseq>;
++	bus-width = <4>;
++	non-removable;
++	/* SDIO data errors have been reported above 40 MHz */
++	max-frequency = <35000000>;
++	status = "okay";
++
++	wifi@1 {
++		reg = <1>;
++	};
++};
++
+ &ohci0 {
+ 	status = "okay";
+ };
+@@ -245,6 +279,8 @@
+ 			};
+ 
+ 			reg_bldo1: bldo1 {
++				/* also the I/O rail of the Wi-Fi/BT module */
++				regulator-always-on;
+ 				regulator-min-microvolt = <1800000>;
+ 				regulator-max-microvolt = <1800000>;
+ 				regulator-name = "vcc-pg-iowifi";
