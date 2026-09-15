@@ -1,9 +1,10 @@
 name: Build GL.iNet GL-BE14000 (Flint 4) 25.12.5
 # Builds mediatek/filogic images for the GL.iNet GL-BE14000 (Flint 4) from
 # this branch: OpenWrt 25.12.5 plus the board support ported from John
-# Crispin's (blogic) GL-BE14000 series - the board itself, the RTL8261C/D-CG
-# 10G PHY driver ported to 6.12, and the Motorcomm YT921x switch driver built
-# out of tree.
+# Crispin's (blogic) GL-BE14000 series and JiaY-shi's completion of it
+# (blogic/openwrt#4) - the board itself, the RTL8261C/D-CG 10G PHY driver
+# ported to 6.12, and the Motorcomm YT9224 switch and YT8824 PHY drivers
+# built out of tree.
 #
 # The kernel config is seeded from the official 25.12.5 config.buildinfo and
 # nothing on this branch adds a CONFIG_ symbol, so the computed vermagic must
@@ -89,7 +90,13 @@ jobs:
           chk target/linux/mediatek/dts/mt7988a-glinet-gl-be14000.dts
           chk target/linux/mediatek/patches-6.12/742-net-phy-realtek-add-5G-and-10G-PHY-support.patch
           chk target/linux/mediatek/patches-6.12/743-net-phy-realtek-add-support-for-rtl8261c.patch
+          chk target/linux/mediatek/patches-6.12/744-net-phy-realtek-fix-RTL8261C-firmware-probe.patch
+          chk target/linux/mediatek/patches-6.12/738-net-pcs-mtk_usxgmii-support-fixed-10G-switch-trunks.patch
           chk package/kernel/dsa-yt921x/src/yt921x.c
+          chk package/kernel/dsa-yt921x/src/tag_yt922x.c
+          chk package/kernel/dsa-yt921x/src/yt8824.c
+          grep -q 'yt8824_phy4: ethernet-phy@4' target/linux/mediatek/dts/mt7988a-glinet-gl-be14000.dts \
+            || { echo "::error::the DTS does not describe the YT8824 PHY package at 4-7"; fail=1; }
           chk package/firmware/rtl8261c-firmware/files/rtl8261c.bin
           chk target/linux/mediatek/filogic/base-files/etc/apk/repositories.d/distfeeds.list
           grep -q '^define Device/glinet_gl-be14000$' target/linux/mediatek/image/filogic.mk \
@@ -209,7 +216,7 @@ jobs:
       - name: Verify the switch driver, the board DTB and the device rootfs
         run: |
           fail=0
-          for m in yt921x tag_yt921x; do
+          for m in yt921x tag_yt921x tag_yt922x yt8824; do
             f=$(find build_dir -path '*/dsa-yt921x/*' -name "$m.ko" 2>/dev/null | head -1)
             [ -n "$f" ] || { echo "::error::$m.ko was not built"; fail=1; }
           done
@@ -218,8 +225,10 @@ jobs:
             echo "::error::kernel DTB image-mt7988a-glinet-gl-be14000.dtb not found"
             fail=1
           else
-            strings "$KDTB" | grep -qx 'motorcomm,yt9224' \
-              || { echo "::error::DTB has no motorcomm,yt9224 switch node"; fail=1; }
+            for s in 'motorcomm,yt9224' 'yt922x_4b' '10gbase-r' 'mediatek,force-fixed-10g'; do
+              strings "$KDTB" | grep -qx "$s" \
+                || { echo "::error::DTB has no '$s' string"; fail=1; }
+            done
           fi
           # The manifest OpenWrt writes (include/image.mk, Image/Manifest) is
           # taken from TARGET_DIR_ORIG - the rootfs before DEVICE_PACKAGES are
@@ -240,7 +249,7 @@ jobs:
             echo "device rootfs: $RD"
             # The files themselves are the ground truth about what is in the
             # image, so these are the checks that fail the build.
-            for f in yt921x.ko tag_yt921x.ko; do
+            for f in yt921x.ko tag_yt921x.ko tag_yt922x.ko yt8824.ko; do
               find "$RD/lib/modules" -name "$f" | grep -q . \
                 || { echo "::error::$f is not in the device rootfs"; fail=1; }
             done
@@ -257,7 +266,7 @@ jobs:
               echo "device manifest: $(wc -l < "$DEVMAN") packages"
               # Only a warning: apk is being run against an offline root here,
               # and the file checks above already decided the build.
-              for p in kmod-dsa-yt921x rtl8261c-firmware kmod-mt7996-233-firmware luci; do
+              for p in kmod-dsa-yt921x kmod-phy-yt8824 rtl8261c-firmware kmod-mt7996-233-firmware luci; do
                 grep -q "^$p " "$DEVMAN" \
                   || echo "::warning::$p is not listed in the generated device manifest"
               done
@@ -340,21 +349,46 @@ jobs:
             MT7988A, eMMC, MT7996 Wi-Fi 7.
 
             Built from `${{ github.sha }}`, branch `openwrt-25.12-glinet-gl-be14000`:
-            the `v25.12.5` tag plus the board support ported from John Crispin's
-            (blogic) GL-BE14000 series on OpenWrt main. Same feature set as the
-            snapshot build of this board, on the stable kernel (6.12) and package
-            set of 25.12.5.
+            the `v25.12.5` tag plus the board support from John Crispin's (blogic)
+            GL-BE14000 series and JiaY-shi's completion of it,
+            https://github.com/blogic/openwrt/pull/4, ported to the stable kernel
+            (6.12) and package set of 25.12.5.
+
+            ### Ports
+
+            | Port | Hardware | Status |
+            |---|---|---|
+            | `wan` | 10GbE RJ45, Realtek RTL8261D | works; RTL8261C/D probe fixed, see below |
+            | `lan1`-`lan4` | 2.5GbE, Motorcomm YT9224 + YT8824 | **works** (new in this release) |
+            | `lan5`-`lan8` | 1GbE, MT7988 built-in switch | works |
+            | `sfp` | 10G SFP+ on the YT9224, 10GBASE-R | not confirmed on hardware yet |
+
+            ### Changes since the previous release
+
+            * **`lan1`-`lan4` work.** JiaY-shi's complete YT9224 driver and the YT8824
+              quad 2.5G PHY driver, both built out of tree as `kmod-dsa-yt921x` and
+              `kmod-phy-yt8824`, with the PHY package at switch MDIO addresses 4-7 and a
+              fixed 10G USXGMII trunk to the switch. Lan ports on the YT9224 are
+              bridged in the switch itself.
+            * **10G WAN probe fixed.** The RTL8261C/D driver first asked for another
+              RTL826x model's firmware, which the image does not carry, so it deferred
+              forever and the Generic Clause 45 driver took the port - without the
+              RTL8261C init and with a possibly wrong link speed. It now loads only
+              `rtl8261c.bin`.
+            * **Stable LAN MAC.** The link to the YT9224 picked a random MAC on every
+              boot, and `lan1`-`lan4`, `sfp` and `br-lan` with it. It now uses the LAN
+              address from the factory partition like `lan5`-`lan8`.
+            * **2 GiB RAM** described in the device tree, matching production units.
 
             ### Known issues - read before flashing
 
-            * **The four 2.5GbE ports (`lan1`-`lan4`) do not work yet.** They hang off
-              the Motorcomm YT9224 switch, and its integrated PHYs (ID `0x4f51e899`)
-              have no driver in the kernel so far - not here and not on main. They
-              fail to probe at boot (the related errors in `dmesg` are expected) and
-              stay dead until a driver lands. Use the 10G WAN port or the 1GbE ports
-              `lan5`-`lan8` (MT7988 built-in switch) in the meantime. The SFP+ cage
-              (`sfp`) sits on the same YT9224 switch, so treat it as untested until
-              someone confirms it.
+            * **Pre-production samples with 1 GiB RAM: do not flash.** The device tree
+              now declares the 2 GiB of retail units.
+            * **Not in this 25.12.5 build**, unlike the snapshot build of this board:
+              MediaTek PPE hardware offload for traffic behind the YT9224, WED for the
+              MT7996, and 802.1Q VLAN and multicast offload on the switch. They need
+              changes to the built-in DSA core and Ethernet driver that the official
+              kmods were not built against. VLANs and multicast still work, in software.
             * The front LCD is not driven: the panel and touch stack needs the
               `display` target feature and DRM kernel modules that the official
               25.12.5 filogic kernel does not have, and enabling them would break
@@ -370,10 +404,11 @@ jobs:
             package manager) pulls kernel modules straight from
             downloads.openwrt.org like on an official image. `kmods-*.tar.gz` in
             this release is the module set this build produced itself, with the
-            apk index, for offline use - and the only place `kmod-dsa-yt921x`
-            (the YT9224 switch driver, built out of tree) exists. It is already
-            installed in the image; the archive is for reinstalling it later or
-            using it on another 25.12.5 build of this board.
+            apk index, for offline use - and the only place `kmod-dsa-yt921x` and
+            `kmod-phy-yt8824` (the YT9224 switch and YT8824 PHY drivers, built out
+            of tree) exist. Both are already installed in the image; the archive is
+            for reinstalling them later or using them on another 25.12.5 build of
+            this board.
 
             ### What is in the image
 
@@ -382,7 +417,7 @@ jobs:
             * **LuCI** (with `luci-ssl`, attended sysupgrade and the package
               manager, as on the official 25.12.5 images) - http://192.168.1.1.
             * RTL8261D-CG 10G PHY driver with its `rtl8261c.bin` patch firmware,
-              MT7996 Wi-Fi firmware, WED offload firmware, the YT9224 switch driver,
+              MT7996 Wi-Fi firmware, the YT9224 switch and YT8824 PHY drivers,
               USB 3, PWM fan, SFP support.
 
             ### Files
