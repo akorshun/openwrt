@@ -99,6 +99,7 @@ jobs:
           chk target/linux/mediatek/patches-6.12/748-net-mediatek-ppe-retire-only-the-expired-bridge-subflow.patch
           chk target/linux/mediatek/patches-6.12/749-net-bridge-notify-switchdev-before-a-static-FDB-move.patch
           chk target/linux/mediatek/filogic/base-files/etc/hotplug.d/net/30-wifi-flow-offload
+          chk target/linux/mediatek/filogic/base-files/etc/init.d/cpufreq
           grep -q 'MODPARAMS.mt7996e:=wed_enable=1' package/kernel/mt76/Makefile \
             || { echo "::error::mt7996e does not enable WED"; fail=1; }
           sed -n '/^define Device\/glinet_gl-be14000$/,/^endef$/p' target/linux/mediatek/image/filogic.mk \
@@ -329,6 +330,10 @@ jobs:
               || { echo "::error::bridger is not in the device rootfs"; fail=1; }
             [ -f "$RD/etc/hotplug.d/net/30-wifi-flow-offload" ] \
               || { echo "::error::the Wi-Fi flowtable hotplug handler is not in the device rootfs"; fail=1; }
+            [ -x "$RD/etc/init.d/cpufreq" ] \
+              || { echo "::error::/etc/init.d/cpufreq is not in the device rootfs"; fail=1; }
+            ls "$RD"/etc/rc.d/S*cpufreq >/dev/null 2>&1 \
+              || echo "::warning::/etc/init.d/cpufreq is not enabled in the device rootfs"
             DEVMAN="${TARGET_DIR}/openwrt-25.12.5-mediatek-filogic-${DEVICE}.manifest"
             IPKG_INSTROOT="$RD" staging_dir/host/bin/apk --root "$RD" \
               --keys-dir "$(pwd)" --no-logfile --preserve-env \
@@ -466,6 +471,12 @@ jobs:
               `lan1`-`lan4` were reported as `[HW_OFFLOAD]` in conntrack but never
               bound in hardware.
             * **`bridger`** in the image, for hardware offload of bridged flows.
+            * **CPU at full speed.** The filogic kernel defaults to the `userspace`
+              cpufreq governor, which kept the CPU at the 1.5 GHz the GL.iNet
+              bootloader leaves it at. `/etc/init.d/cpufreq` now switches to
+              `performance` at boot: 1.8 GHz, about 20% faster (stress-ng, one
+              thread: int64 403 -> 484, matrixprod 21.7 -> 26.0).
+              `/etc/init.d/cpufreq disable` restores the old behaviour.
             * Static bridge FDB moves now notify the switch of the old port.
             * All of this is code in the built-in drivers plus packages: still no
               kernel config change, so the official kmods keep working.
