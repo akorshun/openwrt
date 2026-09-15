@@ -1,0 +1,202 @@
+From: JiaY-shi <shi05275@163.com>
+Subject: [PATCH] net: ethernet: mediatek: offload YT922x four-byte port tags
+
+Recognize the distinct YT922X_4B protocol in the PPE DSA device mapping.
+Use the shared port-tag encoder for the VLAN TCI inserted on egress and
+select the conduit PPE on ingress. The original eight-byte protocol
+continues to use the software forwarding path.
+
+Keep the full TCI, including DEI: physical port 7 is encoded as 0x1000.
+Reserve a VLAN layer for the CPU tag and reject flows that would exceed
+the PPE's two VLAN layers instead of silently omitting a customer tag.
+
+Keep flows of VLAN-filtering YT922x bridges on the software path: the
+software tagger supplies access-port PVIDs, which PPE cannot reproduce.
+
+Signed-off-by: JiaY-shi <shi05275@163.com>
+[backport of target/linux/mediatek/patches-6.18/967-41 and the PPE part
+ of 967-50 to 6.12, together with what they build on from Daniel Golle's
+ pending-6.18/795-09 "offload flows to MxL862xx switches in tag_8021q
+ mode": the push_vid out-parameter of mtk_flow_get_dsa_port() and the
+ ingress conduit substitution (without the MxL862xx case, whose tagger
+ 6.12 does not have). The taggers are out of tree on 6.12, so
+ <linux/dsa/yt922x.h> also carries their protocol numbers instead of
+ <net/dsa.h>; no kernel config symbol and no structure changes.]
+Signed-off-by: Andrey Korshunov <razor1702@gmail.com>
+---
+--- /dev/null
++++ b/include/linux/dsa/yt922x.h
+@@ -0,0 +1,42 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef _LINUX_DSA_YT922X_H
++#define _LINUX_DSA_YT922X_H
++
++#include <linux/bitfield.h>
++#include <linux/types.h>
++
++/* The Motorcomm taggers are built out of tree on this kernel
++ * (package/kernel/dsa-yt921x), so their protocols are not part of
++ * enum dsa_tag_protocol. The DSA core only ever looks a tagger up by
++ * number; these are the values OpenWrt main has in the enum. They live
++ * here so that the out-of-tree taggers and the MediaTek PPE offload
++ * code agree on them without changing <net/dsa.h>.
++ */
++#define DSA_TAG_PROTO_YT921X_VALUE	32
++#define DSA_TAG_PROTO_YT922X_VALUE	33
++#define DSA_TAG_PROTO_YT922X_4B_VALUE	34
++
++#define DSA_TAG_PROTO_YT921X \
++	((enum dsa_tag_protocol)DSA_TAG_PROTO_YT921X_VALUE)
++#define DSA_TAG_PROTO_YT922X \
++	((enum dsa_tag_protocol)DSA_TAG_PROTO_YT922X_VALUE)
++#define DSA_TAG_PROTO_YT922X_4B \
++	((enum dsa_tag_protocol)DSA_TAG_PROTO_YT922X_4B_VALUE)
++
++/* YT9224 four-byte port tag, following the configurable two-byte TPID.
++ * TX: one destination bit per physical port, starting at bit 5.
++ * RX: source physical port in bits 7:4. Customer VLAN tags follow this tag.
++ * Do not reuse the eight-byte format's force-destination or priority bits.
++ */
++#define YT922X_4B_TX_PORT_M	GENMASK(13, 5)
++#define YT922X_4B_RX_PORT_M	GENMASK(7, 4)
++
++static inline u16 yt922x_4b_port_tag(unsigned int port)
++{
++	if (port > 8)
++		return 0;
++
++	return FIELD_PREP(YT922X_4B_TX_PORT_M, BIT(port));
++}
++
++#endif
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
+@@ -10,6 +10,7 @@
+ #include <net/flow_offload.h>
+ #include <net/pkt_cls.h>
+ #include <net/dsa.h>
++#include <linux/dsa/yt922x.h>
+ #include "mtk_eth_soc.h"
+ #include "mtk_wed.h"
+ 
+@@ -166,18 +167,48 @@ mtk_flow_mangle_ipv4(const struct flow_a
+ 	return 0;
+ }
+ 
++/*
++ * Inspect *dev as a DSA user netdev.  On success, substitute *dev with
++ * the conduit netdev, return the DSA user port's dp->index, and in
++ * *push_vid hand back either 0 (native MTK tag; the PPE injects its
++ * magic etype later via mtk_foe_entry_set_dsa()) or the full VLAN TCI
++ * of the VLAN-shaped YT922x four-byte port tag, which the PPE pushes as
++ * the outer 802.1Q tag of the egressing frame.
++ *
++ * push_vid may be NULL for callers that only want the idev->conduit
++ * substitution (ingress-side ppe_idx selection).
++ */
+ static int
+-mtk_flow_get_dsa_port(struct net_device **dev)
++mtk_flow_get_dsa_port(struct net_device **dev, u16 *push_vid)
+ {
+ #if IS_ENABLED(CONFIG_NET_DSA)
++	enum dsa_tag_protocol proto;
+ 	struct dsa_port *dp;
++	u16 tag = 0;
+ 
+ 	dp = dsa_port_from_netdev(*dev);
+ 	if (IS_ERR(dp))
+ 		return -ENODEV;
+ 
+-	if (dp->cpu_dp->tag_ops->proto != DSA_TAG_PROTO_MTK)
++	/* DSA_TAG_PROTO_YT922X_4B is not an enumerator on this kernel, so
++	 * compare instead of switching on the protocol.
++	 */
++	proto = dp->cpu_dp->tag_ops->proto;
++	if (proto == DSA_TAG_PROTO_YT922X_4B) {
++		/* The software tagger supplies access-port PVIDs. PPE cannot
++		 * reproduce this policy yet, so retain the software path.
++		 */
++		if (dsa_port_is_vlan_filtering(dp))
++			return -EOPNOTSUPP;
++		tag = yt922x_4b_port_tag(dp->index);
++		if (!tag)
++			return -ENODEV;
++	} else if (proto != DSA_TAG_PROTO_MTK) {
+ 		return -ENODEV;
++	}
++
++	if (push_vid)
++		*push_vid = tag;
+ 
+ 	*dev = dsa_port_to_conduit(dp);
+ 
+@@ -190,10 +221,11 @@ mtk_flow_get_dsa_port(struct net_device
+ static int
+ mtk_flow_set_output_device(struct mtk_eth *eth, struct mtk_foe_entry *foe,
+ 			   struct net_device *dev, const u8 *dest_mac,
+-			   int *wed_index)
++			   int *wed_index, unsigned int num_vlans)
+ {
+ 	struct mtk_wdma_info info = {};
+-	int pse_port, dsa_port, queue;
++	int pse_port, dsa_port, queue, err;
++	u16 push_vid = 0;
+ 
+ 	if (mtk_flow_get_wdma_info(dev, dest_mac, &info) == 0) {
+ 		mtk_foe_entry_set_wdma(eth, foe, info.wdma_idx, info.queue,
+@@ -219,7 +251,7 @@ mtk_flow_set_output_device(struct mtk_et
+ 		goto out;
+ 	}
+ 
+-	dsa_port = mtk_flow_get_dsa_port(&dev);
++	dsa_port = mtk_flow_get_dsa_port(&dev, &push_vid);
+ 
+ 	if (dev == eth->netdev[0])
+ 		pse_port = PSE_GDM1_PORT;
+@@ -231,7 +263,18 @@ mtk_flow_set_output_device(struct mtk_et
+ 		return -EOPNOTSUPP;
+ 
+ 	if (dsa_port >= 0) {
+-		mtk_foe_entry_set_dsa(eth, foe, dsa_port);
++		if (push_vid) {
++			/* Reserve one of the PPE's two VLAN slots for the CPU tag.
++			 * Preserve the full TCI: YT9224 port 7 uses bit 12 (DEI).
++			 */
++			if (num_vlans >= 2)
++				return -EOPNOTSUPP;
++			err = mtk_foe_entry_set_vlan(eth, foe, push_vid);
++			if (err)
++				return err;
++		} else {
++			mtk_foe_entry_set_dsa(eth, foe, dsa_port);
++		}
+ 		queue = 3 + dsa_port;
+ 	} else {
+ 		queue = pse_port - 1;
+@@ -289,6 +332,17 @@ mtk_flow_offload_replace(struct mtk_eth
+ 		flow_rule_match_meta(rule, &match);
+ 		if (mtk_is_netsys_v2_or_greater(eth)) {
+ 			idev = __dev_get_by_index(&init_net, match.key->ingress_ifindex);
++			/*
++			 * If idev is a DSA user netdev, substitute it with
++			 * its conduit so the valid-idev check below passes
++			 * and ppe_index picks up the conduit's PPE engine.
++			 * Without this, upstream flows from a DSA user port
++			 * behind a SerDes GMAC (e.g. the YT9224 on gmac1)
++			 * install on ppe[0] while the conduit routes ingress
++			 * through its own ppe[mac->ppe_idx]; the lookup misses
++			 * and the flow never binds in HW.
++			 */
++			mtk_flow_get_dsa_port(&idev, NULL);
+ 			if (mtk_flow_is_valid_idev(eth, idev)) {
+ 				struct mtk_mac *mac = netdev_priv(idev);
+ 
+@@ -472,7 +526,7 @@ mtk_flow_offload_replace(struct mtk_eth
+ 	}
+ 
+ 	err = mtk_flow_set_output_device(eth, &foe, odev, data.eth.h_dest,
+-					 &wed_index);
++					 &wed_index, data.vlan.num);
+ 	if (err)
+ 		return err;
+ 
