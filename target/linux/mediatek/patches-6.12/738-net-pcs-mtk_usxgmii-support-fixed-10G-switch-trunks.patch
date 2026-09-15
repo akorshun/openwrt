@@ -1,0 +1,36 @@
+From: JiaY-shi <shi05275@163.com>
+Subject: [PATCH] net: pcs: mtk_usxgmii: keep fixed 10G switch trunks out of autonegotiation
+
+A fixed 10G USXGMII link to an external switch, such as the YT9224 CPU
+port on the GL.iNet GL-BE14000, has no link partner to negotiate with.
+Boards that mark the PCS with mediatek,force-fixed-10g get USXGMII
+autonegotiation disabled and rate update mode selected instead.
+
+This is the pcs_config part of the YT9224 series on OpenWrt main. The
+rest of its PCS rework - link polling and CTLE checks - is not carried:
+the 6.12 driver already reconfigures the PCS on link up and re-runs the
+configuration from its polled get_state until the link comes back.
+
+Signed-off-by: JiaY-shi <shi05275@163.com>
+---
+--- a/drivers/net/pcs/pcs-mtk-usxgmii.c
++++ b/drivers/net/pcs/pcs-mtk-usxgmii.c
+@@ -127,7 +127,17 @@ static int mtk_usxgmii_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode
+ 	bool mode_changed = false;
+ 
+ 	if (interface == PHY_INTERFACE_MODE_USXGMII) {
+-		an_ctrl = FIELD_PREP(USXGMII_AN_SYNC_CNT, 0x1FF) | USXGMII_AN_ENABLE;
++		an_ctrl = FIELD_PREP(USXGMII_AN_SYNC_CNT, 0x1FF);
++
++		/* A fixed 10G USXGMII trunk to an external switch, such as
++		 * the YT9224 CPU port on the GL.iNet GL-BE14000, has no
++		 * link partner to negotiate with.
++		 */
++		if (!of_property_read_bool(mpcs->dev->of_node,
++					   "mediatek,force-fixed-10g"))
++			an_ctrl |= USXGMII_AN_ENABLE;
++		else
++			adapt_mode = USXGMII_RATE_UPDATE_MODE;
+ 		link_timer = FIELD_PREP(USXGMII_LINK_TIMER_IDLE_DETECT, 0x7B) |
+ 			     FIELD_PREP(USXGMII_LINK_TIMER_COMP_ACK_DETECT, 0x7B) |
+ 			     FIELD_PREP(USXGMII_LINK_TIMER_AN_RESTART, 0x7B);
