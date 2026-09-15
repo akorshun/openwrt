@@ -1605,6 +1605,7 @@ define Device/glinet_gl-be14000
   DEVICE_PACKAGES := kmod-mt7996-233-firmware mt7988-wo-firmware kmod-hwmon-pwmfan \
 	kmod-usb3 kmod-sfp kmod-dsa-yt921x kmod-phy-yt8824 rtl8261c-firmware \
 	e2fsprogs f2fsck mkf2fs
+  DEVICE_PACKAGES += bridger
   IMAGES := sysupgrade.bin factory.bin
   IMAGE/factory.bin := append-kernel | pad-to 32M | append-rootfs
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
