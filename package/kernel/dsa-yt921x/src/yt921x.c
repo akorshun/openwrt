@@ -15,11 +15,13 @@
 #include <linux/if_vlan.h>
 #include <linux/iopoll.h>
 #include <linux/mdio.h>
+#include <linux/mii.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
 #include <linux/sort.h>
+#include <linux/unaligned.h>
 
 #include <net/dsa.h>
 #include <net/dscp.h>
@@ -141,6 +143,7 @@ struct yt921x_info {
 #define YT921X_PORT_MASK_INT0_n(n)	GENMASK((n) - 1, 0)
 #define YT921X_PORT_MASK_EXT0		BIT(8)
 #define YT921X_PORT_MASK_EXT1		BIT(9)
+#define YT922X_PORT_MASK_INTm_n(m, n)	GENMASK((n), (m))
 
 static const struct yt921x_info yt921x_infos[] = {
 	{
@@ -180,19 +183,20 @@ static const struct yt921x_info yt921x_infos[] = {
 	},
 	{
 		"YT9224", YT9224_MAJOR, 0, 0,
-		0x1f1,
+		YT922X_PORT_MASK_INTm_n(4, 7) | YT921X_PORT_MASK_INTn(0) | YT921X_PORT_MASK_INTn(8),
 		0x0,
 	},
 	{}
 };
 
-#define YT92XX_NAME	"yt92xx"
+#define YT921X_NAME	"yt921x"
 
 #define YT921X_VID_UNWARE	4095
 
 #define YT921X_POLL_SLEEP_US	10000
 #define YT921X_POLL_TIMEOUT_US	100000
 
+#define YT922X_COMMON_EXT_PHYADDR 9
 /* The interval should be small enough to avoid overflow of 32bit MIBs.
  *
  * Until we can read MIBs from stats64 call directly (i.e. sleep
@@ -599,7 +603,7 @@ static int yt921x_mbus_int_read(struct mii_bus *mbus, int port, int reg)
 	u16 val;
 	int res;
 
-	max_ports = priv->chip_info->ports;
+	max_ports = priv->series_info->ports;
 	if (port >= max_ports)
 		return U16_MAX;
 
@@ -619,7 +623,7 @@ yt921x_mbus_int_write(struct mii_bus *mbus, int port, int reg, u16 data)
 	int max_ports;
 	int res;
 
-	max_ports = priv->chip_info->ports;
+	max_ports = priv->series_info->ports;
 	if (port >= max_ports)
 		return -ENODEV;
 
@@ -642,7 +646,7 @@ yt921x_mbus_int_init(struct yt921x_priv *priv, struct device_node *mnp)
 	if (!mbus)
 		return -ENOMEM;
 
-	max_ports = priv->chip_info->ports;
+	max_ports = priv->series_info->ports;
 	mbus->name = "YT921x internal MDIO bus";
 	snprintf(mbus->id, MII_BUS_ID_SIZE, "%s", dev_name(dev));
 	mbus->priv = priv;
@@ -4812,6 +4816,7 @@ static int yt921x_dsa_setup(struct dsa_switch *ds)
 
 		pp->index = i;
 		INIT_DELAYED_WORK(&pp->mib_read, yt921x_poll_mib);
+		pp->mib_working = 1;
 	}
 
 	mutex_lock(&priv->reg_lock);
@@ -4932,10 +4937,120 @@ static const struct dsa_switch_ops yt921x_dsa_switch_ops = {
 	.setup			= yt921x_dsa_setup,
 };
 
+#define YT922X_SDS_LINK_STATUS		0x11
+#define YT922X_SDS_LINK_UP		BIT(10)
+#define YT922X_CPU_MAC_RETRY_MS		100
+
+/* All recovery state is protected by reg_lock. */
+static void yt922x_cpu_mac_schedule(struct yt921x_port *pp,
+				    unsigned long delay)
+{
+	if (!pp->priv->cpu_mac_stopping && pp->fixed_usxgmii_10g &&
+	    pp->conduit_operational)
+		mod_delayed_work(system_wq, &pp->cpu_mac_work, delay);
+}
+
+static void yt922x_cpu_mac_resync(struct work_struct *work)
+{
+	struct yt921x_port *pp = container_of(to_delayed_work(work),
+					    struct yt921x_port, cpu_mac_work);
+	struct yt921x_priv *priv = pp->priv;
+	u32 ctrl, status, mask;
+	u16 phy_status;
+	int res;
+
+	mutex_lock(&priv->reg_lock);
+	if (priv->cpu_mac_stopping || !pp->fixed_usxgmii_10g ||
+	    !pp->conduit_operational)
+		goto out;
+
+	/* Fixed-link does not wait for the switch-side PHY to lock. */
+	res = yt921x_intif_read(priv, pp->index, YT922X_SDS_LINK_STATUS,
+				&phy_status);
+	if (res || !(phy_status & YT922X_SDS_LINK_UP))
+		goto retry;
+
+	res = yt921x_reg_read(priv, YT922X_PORTn_CTRL(pp->index), &ctrl);
+	if (res)
+		goto retry;
+
+	/* FORCE_OP must be written even when its bit is already set. */
+	res = yt921x_reg_write(priv, YT922X_PORTn_CTRL(pp->index),
+			       ctrl | YT922X_PORT_FORCE_OP);
+	if (res)
+		goto retry;
+
+	res = yt921x_reg_read(priv, YT922X_PORTn_STATUS(pp->index), &status);
+	if (res)
+		goto retry;
+	mask = YT922X_PORT_STATUS_LINK | YT922X_PORT_RX_MAC_EN |
+	       YT922X_PORT_TX_MAC_EN;
+	if ((status & mask) != mask)
+		goto retry;
+
+	goto out;
+
+retry:
+	if (res)
+		dev_err_ratelimited(to_device(priv),
+				    "Failed to synchronize CPU port %u MAC: %d\n",
+				    pp->index, res);
+	yt922x_cpu_mac_schedule(pp, msecs_to_jiffies(YT922X_CPU_MAC_RETRY_MS));
+out:
+	mutex_unlock(&priv->reg_lock);
+}
+
+static void
+yt922x_conduit_state_change(struct dsa_switch *ds,
+			    const struct net_device *conduit, bool operational)
+{
+	struct dsa_port *cpu_dp = conduit->dsa_ptr;
+	struct yt921x_priv *priv = to_yt921x_priv(ds);
+	struct yt921x_port *pp;
+
+	if (!cpu_dp || cpu_dp->ds != ds ||
+	    !dsa_is_cpu_port(ds, cpu_dp->index))
+		return;
+
+	pp = &priv->ports[cpu_dp->index];
+	mutex_lock(&priv->reg_lock);
+	/* Cache this even when the CPU port's mac_link_up has not run yet. */
+	pp->conduit_operational = operational;
+	if (operational)
+		yt922x_cpu_mac_schedule(pp, 0);
+	else
+		cancel_delayed_work(&pp->cpu_mac_work);
+	mutex_unlock(&priv->reg_lock);
+}
+
+static void yt922x_cpu_mac_stop(struct yt921x_priv *priv)
+{
+	int port;
+
+	if (priv->series_info->mode != YT9224)
+		return;
+
+	mutex_lock(&priv->reg_lock);
+	priv->cpu_mac_stopping = true;
+	for (port = 0; port < ARRAY_SIZE(priv->ports); port++) {
+		priv->ports[port].fixed_usxgmii_10g = false;
+		priv->ports[port].conduit_operational = false;
+	}
+	mutex_unlock(&priv->reg_lock);
+
+	/* Never wait for a worker while holding the lock it acquires. */
+	for (port = 0; port < ARRAY_SIZE(priv->ports); port++)
+		cancel_delayed_work_sync(&priv->ports[port].cpu_mac_work);
+}
+
 static int yt922x_port_down(struct yt921x_priv *priv, int port)
 {
+	struct yt921x_port *pp = &priv->ports[port];
 	u32 mask;
 	int res;
+
+	pp->fixed_usxgmii_10g = false;
+	cancel_delayed_work(&pp->cpu_mac_work);
 
 	/* mac force down */
 	mask = YT922X_PORT_LINK | YT922X_PORT_RX_MAC_EN |
@@ -4949,14 +5064,7 @@ static int yt922x_port_down(struct yt921x_priv *priv, int port)
 	if (res)
 		return res;
 
-	/* disable en_phy */
-	res = yt921x_reg_clear_bits(priv, YT922X_EN_PHY_VALUE, BIT(port));
-	if (res)
-		return res;
-	res = yt921x_reg_set_bits(priv, YT922X_EN_PHY_OVERWRITE, BIT(port));
-	if (res)
-		return res;
-
+	/* Keep the PHY running so it can report the next link-up event. */
 	return 0;
 }
 
@@ -4978,14 +5086,77 @@ yt922x_phylink_mac_link_down(struct phylink_config *config, unsigned int mode,
 			port, res);
 }
 
+#define YT922X_USXGMII_FORCE_CTRL		0x13
+#define YT922X_USXGMII_FORCE_MASK		GENMASK(15, 8)
+#define YT922X_USXGMII_FORCE_10G		0xbb00
+
+static int yt922x_fixed_usxgmii_config(struct yt921x_priv *priv, int port)
+{
+	u16 bmcr, ctrl;
+	int res, err;
+
+	/* Wait for the reset issued by SerDes initialization, without another. */
+	res = read_poll_timeout(yt921x_intif_read, err,
+				err || !(bmcr & BMCR_RESET),
+				1000, 500000, false,
+				priv, port, MII_BMCR, &bmcr);
+	if (err)
+		return err;
+	if (res)
+		return res;
+
+	res = yt921x_intif_read(priv, port, YT922X_USXGMII_FORCE_CTRL, &ctrl);
+	if (res)
+		return res;
+
+	/* Force both USXGMII rate fields to 10G, preserving low bits. */
+	ctrl = (ctrl & ~YT922X_USXGMII_FORCE_MASK) | YT922X_USXGMII_FORCE_10G;
+	res = yt921x_intif_write(priv, port, YT922X_USXGMII_FORCE_CTRL, ctrl);
+	if (res)
+		return res;
+
+	/* SerDes initialization resets the PHY and restores ANENABLE. */
+	bmcr &= ~BMCR_ANENABLE;
+	res = yt921x_intif_write(priv, port, MII_BMCR, bmcr);
+	if (res)
+		return res;
+	res = yt921x_intif_read(priv, port, MII_BMCR, &bmcr);
+	if (res)
+		return res;
+	if (bmcr & (BMCR_RESET | BMCR_ANENABLE))
+		return -EIO;
+
+	res = yt921x_intif_read(priv, port, YT922X_USXGMII_FORCE_CTRL, &ctrl);
+	if (res)
+		return res;
+	if ((ctrl & YT922X_USXGMII_FORCE_MASK) != YT922X_USXGMII_FORCE_10G)
+		return -EIO;
+
+	return 0;
+}
+
 static int
 yt922x_port_up(struct yt921x_priv *priv, int port, unsigned int mode,
 	       phy_interface_t interface, int speed, int duplex,
 	       bool tx_pause, bool rx_pause)
 {
+	struct yt921x_port *pp = &priv->ports[port];
+	bool fixed_usxgmii;
 	u32 mask;
 	u32 ctrl;
 	int res;
+
+	pp->fixed_usxgmii_10g = false;
+	cancel_delayed_work(&pp->cpu_mac_work);
+	fixed_usxgmii = dsa_is_cpu_port(&priv->ds, port) &&
+		       mode == MLO_AN_FIXED &&
+		       interface == PHY_INTERFACE_MODE_USXGMII &&
+		       speed == SPEED_10000 && duplex == DUPLEX_FULL;
+	if (fixed_usxgmii) {
+		res = yt922x_fixed_usxgmii_config(priv, port);
+		if (res)
+			return res;
+	}
 
 	switch (speed) {
 	case SPEED_10:
@@ -4999,6 +5170,9 @@ yt922x_port_up(struct yt921x_priv *priv, int port, unsigned int mode,
 		break;
 	case SPEED_2500:
 		ctrl = YT921X_PORT_SPEED_2500;
+		break;
+	case SPEED_5000:
+		ctrl = YT921X_PORT_SPEED_5000;
 		break;
 	case SPEED_10000:
 		ctrl = YT921X_PORT_SPEED_10000;
@@ -5016,7 +5190,7 @@ yt922x_port_up(struct yt921x_priv *priv, int port, unsigned int mode,
 		YT922X_PORT_CFG_TX_EN | YT922X_PORT_LINK |
 		YT922X_PORT_CFG_RX_EN;
 	ctrl &= ~(YT922X_PORT_FC_AN | YT922X_PORT_LINK_AN);
-	res = yt921x_reg_write(priv, YT921X_PORTn_CTRL(port), ctrl);
+	res = yt921x_reg_write(priv, YT922X_PORTn_CTRL(port), ctrl);
 	if (res)
 		return res;
 	/* force op */
@@ -5032,6 +5206,10 @@ yt922x_port_up(struct yt921x_priv *priv, int port, unsigned int mode,
 	res = yt921x_reg_set_bits(priv, YT922X_EN_PHY_OVERWRITE, BIT(port));
 	if (res)
 		return res;
+
+	/* Handle the converse ordering: conduit-up may already be cached. */
+	pp->fixed_usxgmii_10g = fixed_usxgmii;
+	yt922x_cpu_mac_schedule(pp, 0);
 
 	return 0;
 }
@@ -5058,25 +5236,6 @@ yt922x_phylink_mac_link_up(struct phylink_config *config,
 }
 
 static int
-yt922x_intif_ext_read(struct yt921x_priv *priv, int port, int reg, u16 *valp)
-{
-	int res;
-
-	if (port >= YT922X_PORT_NUM)
-		return -ENODEV;
-
-	res = yt921x_intif_write(priv, port, YT92XX_PAGE_SELECT, reg);
-	if (res)
-		return res;
-
-	res = yt921x_intif_read(priv, port, YT92XX_PAGE, valp);
-	if (res)
-		return res;
-
-	return 0;
-}
-
-static int
 yt921x_intif_ext_write(struct yt921x_priv *priv, int port, int reg, u16 val)
 {
 	int res;
@@ -5095,88 +5254,339 @@ yt921x_intif_ext_write(struct yt921x_priv *priv, int port, int reg, u16 val)
 	return 0;
 }
 
-static int yt922x_internal_phyaddr_get(int port,
-				       enum yt922x_phy_reg_type reg_type,
-				       enum yt922x_phy_reg_space reg_space)
+static int
+yt921x_intif_ext_read(struct yt921x_priv *priv, int port, int reg, u16 *valp)
 {
 	int res;
 
-	if (port >= 4 && port <= 7) {
-		switch (reg_type) {
-		case YT922X_PHY_REG_TYPE_COMMON_EXT:
-			res = 9;
-			break;
-		case YT922X_PHY_REG_TYPE_PHY_COMMON_EXT:
-			if (port <= 5 && port >= 4)
-				res = 4;
-			else if (port <= 7 && port >= 6)
-				res = 6;
-			break;
-		case YT922X_PHY_REG_TYPE_SDS_COMMON_EXT:
-			res = -EINVAL;
-			break;
-		default:
-			if (reg_space != YT922X_PHY_REG_SPACE_PHY)
-				res = -EINVAL;
-			break;
-		}
-	} else {
-		if (port == 8) {
-			switch (reg_type) {
-			case YT922X_PHY_REG_TYPE_COMMON_EXT:
-				res = 9;
-				break;
-			case YT922X_PHY_REG_TYPE_SDS_COMMON_EXT:
-				res = 8;
-				break;
-			case YT922X_PHY_REG_TYPE_MII:
-			case YT922X_PHY_REG_TYPE_EXT:
-				if (reg_space == YT922X_PHY_REG_SPACE_SGMII ||
-				    reg_space == YT922X_PHY_REG_SPACE_USXGMII)
-					res = 8;
-				else
-					res = -EINVAL;
-				break;
-			default:
-				res = -EINVAL;
-				break;
-			}
-			return res;
-		}
-		switch (reg_type) {
-		case YT922X_PHY_REG_TYPE_COMMON_EXT:
-			res = 9;
-			break;
-		case YT922X_PHY_REG_TYPE_SDS_COMMON_EXT:
-			res = 0;
-			break;
-		case YT922X_PHY_REG_TYPE_MII:
-		case YT922X_PHY_REG_TYPE_EXT:
-			if (reg_space == YT922X_PHY_REG_SPACE_SGMII ||
-			    reg_space == YT922X_PHY_REG_SPACE_USXGMII)
-				res = 0;
-			else
-				res = -EINVAL;
-			break;
-		default:
-			res = -EINVAL;
-			break;
-		}
+	if (port >= YT921X_PORT_NUM)
+		return -ENODEV;
+
+	res = yt921x_intif_write(priv, port, YT92XX_PAGE_SELECT, reg);
+	if (res)
+		return res;
+
+	res = yt921x_intif_read(priv, port, YT92XX_PAGE, valp);
+	if (res)
+		return res;
+
+	return 0;
+}
+
+static int yt922x_sds_phyaddr_get(int port,
+				  enum yt922x_phy_reg_type reg_type,
+				  enum yt922x_phy_reg_space reg_space)
+{
+	int res = port;
+
+	/*
+	 * sds phyaddr mapping depend on reg_type and reg_space
+	 */
+	if (!yt922x_port_is_internal_sds(port))
+		return -EOPNOTSUPP;
+	if (reg_type == YT922X_PHY_REG_TYPE_COMMON_EXT) {
+		res = YT922X_COMMON_EXT_PHYADDR;
+		return res;
 	}
 
 	return res;
 }
 
-static int yt922x_port_sds_init(struct yt921x_priv *priv, int port,
-				phy_interface_t interface)
+#define YT922X_EDATA_CTRL	0xe0000
+#define YT922X_EDATA_STATUS	0xe0004
+
+static int yt922x_edata_read(struct yt921x_priv *priv, u16 offset, u8 *data)
+{
+	u32 val;
+	int i, res;
+
+	res = yt921x_reg_write(priv, YT922X_EDATA_CTRL,
+				0x5 | ((offset << 12) & 0x1ff000));
+	if (res)
+		return res;
+
+	for (i = 0; i < 200; i++) {
+		res = yt921x_reg_read(priv, YT922X_EDATA_STATUS, &val);
+		if (res)
+			return res;
+		if ((val & 0xf) == 0x3) {
+			*data = val >> 24;
+			return 0;
+		}
+		udelay(10);
+	}
+
+	return -ETIMEDOUT;
+}
+
+static int yt922x_sds_calibrate(struct yt921x_priv *priv, int port, int addr)
+{
+	u8 edata, layout;
+	u16 val;
+	int res;
+
+	res = yt922x_edata_read(priv, 7, &edata);
+	if (res)
+		return res;
+	res = yt922x_edata_read(priv, 93, &layout);
+	if (res)
+		return res;
+
+	if (layout & BIT(3)) {
+		if (port == 0) {
+			res = yt922x_edata_read(priv, 31, &edata);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x4b4, &val);
+			if (res)
+				return res;
+			val = (val & ~GENMASK(10, 8)) |
+			      FIELD_PREP(GENMASK(10, 8), (edata >> 5) & 0x7);
+			res = yt921x_intif_ext_write(priv, addr, 0x4b4, val);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x4b5, &val);
+			if (res)
+				return res;
+			val = (val & ~GENMASK(6, 4)) |
+			      FIELD_PREP(GENMASK(6, 4), (edata >> 2) & 0x7);
+			res = yt921x_intif_ext_write(priv, addr, 0x4b5, val);
+			if (res)
+				return res;
+			res = yt922x_edata_read(priv, 33, &edata);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x42b, &val);
+			if (res)
+				return res;
+			val = (val & ~GENMASK(13, 12)) |
+			      FIELD_PREP(GENMASK(13, 12), edata & 0x3);
+			res = yt921x_intif_ext_write(priv, addr, 0x42b, val);
+			if (res)
+				return res;
+			res = yt922x_edata_read(priv, 93, &edata);
+			if (res)
+				return res;
+		} else if (port == 8) {
+			res = yt922x_edata_read(priv, 425, &edata);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x4b4, &val);
+			if (res)
+				return res;
+			val = (val & ~GENMASK(10, 8)) |
+			      FIELD_PREP(GENMASK(10, 8), (edata >> 5) & 0x7);
+			res = yt921x_intif_ext_write(priv, addr, 0x4b4, val);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x4b5, &val);
+			if (res)
+				return res;
+			val = (val & ~GENMASK(6, 4)) |
+			      FIELD_PREP(GENMASK(6, 4), (edata >> 2) & 0x7);
+			res = yt921x_intif_ext_write(priv, addr, 0x4b5, val);
+			if (res)
+				return res;
+			res = yt922x_edata_read(priv, 424, &edata);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x42b, &val);
+			if (res)
+				return res;
+			val = (val & ~GENMASK(13, 12)) |
+			      FIELD_PREP(GENMASK(13, 12), (edata >> 6) & 0x3);
+			res = yt921x_intif_ext_write(priv, addr, 0x42b, val);
+			if (res)
+				return res;
+		} else {
+			return -EOPNOTSUPP;
+		}
+
+		res = yt921x_intif_ext_read(priv, addr, 0x429, &val);
+		if (res)
+			return res;
+		val = (val & ~GENMASK(13, 12)) |
+		      FIELD_PREP(GENMASK(13, 12), (edata >> 2) & 0x3);
+		res = yt921x_intif_ext_write(priv, addr, 0x429, val);
+		if (res)
+			return res;
+		res = yt921x_intif_ext_read(priv, addr, 0x441, &val);
+		if (res)
+			return res;
+		val = (val & ~GENMASK(1, 0)) |
+		      FIELD_PREP(GENMASK(1, 0), (edata >> 4) & 0x3);
+		return yt921x_intif_ext_write(priv, addr, 0x441, val);
+	}
+
+	if (edata & BIT(7)) {
+		if (port == 8) {
+			res = yt922x_edata_read(priv, 129, &edata);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x4b4, &val);
+			if (res)
+				return res;
+			val = (val & ~GENMASK(10, 8)) |
+			      FIELD_PREP(GENMASK(10, 8), (edata >> 5) & 0x7);
+			res = yt921x_intif_ext_write(priv, addr, 0x4b4, val);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x4b5, &val);
+			if (res)
+				return res;
+			val = (val & ~GENMASK(6, 4)) |
+			      FIELD_PREP(GENMASK(6, 4), (edata >> 2) & 0x7);
+			res = yt921x_intif_ext_write(priv, addr, 0x4b5, val);
+			if (res)
+				return res;
+			res = yt922x_edata_read(priv, 128, &edata);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x42b, &val);
+			if (res)
+				return res;
+			val = (val & ~GENMASK(13, 12)) |
+			      FIELD_PREP(GENMASK(13, 12), (edata >> 6) & 0x3);
+			res = yt921x_intif_ext_write(priv, addr, 0x42b, val);
+			if (res)
+				return res;
+		} else if (port == 0) {
+			res = yt922x_edata_read(priv, 17, &edata);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x4b4, &val);
+			if (res)
+				return res;
+			val = (val & ~BIT(10)) | FIELD_PREP(BIT(10), edata & 0x1);
+			res = yt921x_intif_ext_write(priv, addr, 0x4b4, val);
+			if (res)
+				return res;
+			res = yt922x_edata_read(priv, 16, &edata);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x4b4, &val);
+			if (res)
+				return res;
+			val = (val & ~GENMASK(9, 8)) |
+			      FIELD_PREP(GENMASK(9, 8), (edata >> 6) & 0x3);
+			res = yt921x_intif_ext_write(priv, addr, 0x4b4, val);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x4b5, &val);
+			if (res)
+				return res;
+			val = (val & ~GENMASK(6, 4)) |
+			      FIELD_PREP(GENMASK(6, 4), (edata >> 3) & 0x7);
+			res = yt921x_intif_ext_write(priv, addr, 0x4b5, val);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x42b, &val);
+			if (res)
+				return res;
+			val = (val & ~GENMASK(13, 12)) |
+			      FIELD_PREP(GENMASK(13, 12), (edata >> 1) & 0x3);
+			res = yt921x_intif_ext_write(priv, addr, 0x42b, val);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x429, &val);
+			if (res)
+				return res;
+			val = (val & ~BIT(13)) | FIELD_PREP(BIT(13), edata & 0x1);
+			res = yt922x_edata_read(priv, 29, &edata);
+			if (res)
+				return res;
+			val = (val & ~BIT(12)) |
+			      FIELD_PREP(BIT(12), (edata >> 6) & 0x1);
+			res = yt921x_intif_ext_write(priv, addr, 0x429, val);
+			if (res)
+				return res;
+			res = yt921x_intif_ext_read(priv, addr, 0x441, &val);
+			if (res)
+				return res;
+			val = (val & ~BIT(0)) | FIELD_PREP(BIT(0), (edata >> 7) & 0x1);
+			res = yt922x_edata_read(priv, 30, &edata);
+			if (res)
+				return res;
+			val = (val & ~BIT(1)) | FIELD_PREP(BIT(1), edata & 0x1);
+			return yt921x_intif_ext_write(priv, addr, 0x441, val);
+		} else {
+			return -EOPNOTSUPP;
+		}
+
+		res = yt921x_intif_ext_read(priv, addr, 0x429, &val);
+		if (res)
+			return res;
+		val = (val & ~GENMASK(13, 12)) |
+		      FIELD_PREP(GENMASK(13, 12), (edata >> 2) & 0x3);
+		res = yt921x_intif_ext_write(priv, addr, 0x429, val);
+		if (res)
+			return res;
+		res = yt921x_intif_ext_read(priv, addr, 0x441, &val);
+		if (res)
+			return res;
+		val = (val & ~GENMASK(1, 0)) |
+		      FIELD_PREP(GENMASK(1, 0), (edata >> 4) & 0x3);
+		return yt921x_intif_ext_write(priv, addr, 0x441, val);
+	}
+
+	res = yt921x_intif_ext_read(priv, addr, 0x4b4, &val);
+	if (res)
+		return res;
+	val = (val & ~GENMASK(10, 8)) |
+	      FIELD_PREP(GENMASK(10, 8),
+			 min_t(u16, FIELD_GET(GENMASK(10, 8), val) + 1, 7));
+	res = yt921x_intif_ext_write(priv, addr, 0x4b4, val);
+	if (res)
+		return res;
+	res = yt921x_intif_ext_read(priv, addr, 0x4b5, &val);
+	if (res)
+		return res;
+	val = (val & ~GENMASK(6, 4)) |
+	      FIELD_PREP(GENMASK(6, 4),
+			 min_t(u16, FIELD_GET(GENMASK(6, 4), val) + 1, 7));
+	res = yt921x_intif_ext_write(priv, addr, 0x4b5, val);
+	if (res)
+		return res;
+	res = yt921x_intif_ext_read(priv, addr, 0x42b, &val);
+	if (res)
+		return res;
+	val = (val & ~GENMASK(13, 12)) |
+	      FIELD_PREP(GENMASK(13, 12),
+			 min_t(u16, FIELD_GET(GENMASK(13, 12), val) + 1, 3));
+	res = yt921x_intif_ext_write(priv, addr, 0x42b, val);
+	if (res)
+		return res;
+	res = yt921x_intif_ext_read(priv, addr, 0x429, &val);
+	if (res)
+		return res;
+	val = (val & ~GENMASK(13, 12)) |
+	      FIELD_PREP(GENMASK(13, 12),
+			 min_t(u16, FIELD_GET(GENMASK(13, 12), val) + 1, 3));
+	res = yt921x_intif_ext_write(priv, addr, 0x429, val);
+	if (res)
+		return res;
+	res = yt921x_intif_ext_read(priv, addr, 0x441, &val);
+	if (res)
+		return res;
+	val = (val & ~GENMASK(1, 0)) |
+	      FIELD_PREP(GENMASK(1, 0),
+			 min_t(u16, FIELD_GET(GENMASK(1, 0), val) + 1, 3));
+	return yt921x_intif_ext_write(priv, addr, 0x441, val);
+}
+
+/**
+ * Initialize serdes configuration based on interface mode.
+ */
+static int yt922x_sds_init(struct yt921x_priv *priv, int port,
+			   phy_interface_t interface)
 {
 	int addr;
 	u16 data;
 	int res;
 
-	addr = yt922x_internal_phyaddr_get(port,
-					   YT922X_PHY_REG_TYPE_SDS_COMMON_EXT,
-					   YT922X_PHY_REG_SPACE_SGMII);
+	addr = yt922x_sds_phyaddr_get(port,
+				      YT922X_PHY_REG_TYPE_SDS_COMMON_EXT,
+				      YT922X_PHY_REG_SPACE_SGMII);
 	if (addr < 0)
 		return -EINVAL;
 	/* write protect */
@@ -5200,7 +5610,8 @@ static int yt922x_port_sds_init(struct yt921x_priv *priv, int port,
 			return res;
 	}
 	/* PLL */
-	if (interface == PHY_INTERFACE_MODE_USXGMII) {
+	if (interface == PHY_INTERFACE_MODE_USXGMII ||
+	    interface == PHY_INTERFACE_MODE_10GBASER) {
 		res = yt921x_intif_ext_write(priv, addr, 0x43a, 0x1006);
 		if (res)
 			return res;
@@ -5299,27 +5710,21 @@ static int yt922x_port_sds_init(struct yt921x_priv *priv, int port,
 	res = yt921x_intif_ext_write(priv, addr, 0x2000, 0x0);
 	if (res)
 		return res;
+	res = yt921x_intif_ext_write(priv, addr, 0x1000, 0x1721);
+	if (res)
+		return res;
+	res = yt921x_intif_ext_write(priv, addr, 0x1000, 0x1720);
+	if (res)
+		return res;
 
 	if (interface == PHY_INTERFACE_MODE_SGMII) {
 		res = yt921x_intif_ext_write(priv, addr, 0x1042, 0x48c);
 		if (res)
 			return res;
 	}
-
-    /* soft reset */
-	addr = yt922x_internal_phyaddr_get(port, YT922X_PHY_REG_TYPE_MII,
-					   YT922X_PHY_REG_SPACE_SGMII);
-	if (addr < 0)
-		return res;
-	res = yt921x_intif_read(priv, addr, 0x2000, &data);
-	if (res)
-		return res;
-	data &= ~(1 << 15);
-	res = yt921x_intif_write(priv, addr, 0x2000, data);
-	if (res)
-		return res;
-	addr = yt922x_internal_phyaddr_get(port, YT922X_PHY_REG_TYPE_MII,
-					   YT922X_PHY_REG_SPACE_USXGMII);
+	/* soft reset */
+	addr = yt922x_sds_phyaddr_get(port, YT922X_PHY_REG_TYPE_MII,
+				      YT922X_PHY_REG_SPACE_SGMII);
 	if (addr < 0)
 		return res;
 	res = yt921x_intif_read(priv, addr, 0x0, &data);
@@ -5329,80 +5734,324 @@ static int yt922x_port_sds_init(struct yt921x_priv *priv, int port,
 	res = yt921x_intif_write(priv, addr, 0x0, data);
 	if (res)
 		return res;
+	addr = yt922x_sds_phyaddr_get(port, YT922X_PHY_REG_TYPE_MII,
+				      YT922X_PHY_REG_SPACE_USXGMII);
+	if (addr < 0)
+		return res;
+	res = yt921x_intif_read(priv, addr, 0x0, &data);
+	if (res)
+		return res;
+	data |= 1 << 15;
+	res = yt921x_intif_write(priv, addr, 0x0, data);
+	if (res)
+		return res;
+	if (interface == PHY_INTERFACE_MODE_USXGMII ||
+	    interface == PHY_INTERFACE_MODE_10GBASER) {
+		res = yt921x_intif_ext_write(priv, addr, 0xb, 0xf01);
+		if (res)
+			return res;
+		res = yt921x_intif_ext_write(priv, addr, 0xc, 0x601);
+		if (res)
+			return res;
+		res = yt921x_intif_ext_write(priv, addr, 0xd, 0x603);
+		if (res)
+			return res;
+		res = yt921x_intif_ext_write(priv, addr, 0xe, 0x60b);
+		if (res)
+			return res;
+	}
 
-	return 0;
+	addr = yt922x_sds_phyaddr_get(port,
+				      YT922X_PHY_REG_TYPE_SDS_COMMON_EXT,
+				      YT922X_PHY_REG_SPACE_SGMII);
+	if (addr < 0)
+		return -EINVAL;
+
+	return yt922x_sds_calibrate(priv, port, addr);
 }
 
 static int
 yt922x_port_config(struct yt921x_priv *priv, int port, unsigned int mode,
 		   phy_interface_t interface)
 {
+	struct device *dev = to_device(priv);
 	int addr;
+	u32 ctrl;
 	u16 data;
 	int res;
 
-	addr = yt922x_internal_phyaddr_get(port,
-					   YT922X_PHY_REG_TYPE_SDS_COMMON_EXT,
-					   YT922X_PHY_REG_SPACE_SGMII);
-	if (addr < 0)
-		return -EINVAL;
-	switch (interface) {
-	/* SERDES */
-	case PHY_INTERFACE_MODE_SGMII:
-	case PHY_INTERFACE_MODE_100BASEX:
-	case PHY_INTERFACE_MODE_1000BASEX:
-	case PHY_INTERFACE_MODE_2500BASEX:
-	case PHY_INTERFACE_MODE_USXGMII:
-		res = yt922x_port_sds_init(priv, port, interface);
-		if (res)
-			return res;
-
-		addr = yt922x_internal_phyaddr_get
-			(port, YT922X_PHY_REG_TYPE_SDS_COMMON_EXT,
-			 YT922X_PHY_REG_SPACE_SGMII);
-		if (addr < 0)
-			return -EINVAL;
-
-		res = yt922x_intif_ext_read(priv, addr, YT922X_PORT_SDS_MODE,
-					    &data);
-		if (res)
-			return res;
-
-		data &= (~0x7 << 4);
-		switch (interface) {
-		case PHY_INTERFACE_MODE_SGMII:
-			data |= FIELD_PREP(YT922X_PORT_SDS_MODE_M,
-					   YT92XX_SERDES_MODE_SGMII);
-			break;
-		case PHY_INTERFACE_MODE_100BASEX:
-			data |= FIELD_PREP(YT922X_PORT_SDS_MODE_M,
-					   YT92XX_SERDES_MODE_100BASEX);
-			break;
-		case PHY_INTERFACE_MODE_1000BASEX:
-			data |= FIELD_PREP(YT922X_PORT_SDS_MODE_M,
-					   YT92XX_SERDES_MODE_1000BASEX);
-			break;
-		case PHY_INTERFACE_MODE_2500BASEX:
-			data |= FIELD_PREP(YT922X_PORT_SDS_MODE_M,
-					   YT92XX_SERDES_MODE_2500BASEX);
-			break;
-		case PHY_INTERFACE_MODE_USXGMII:
-			data |= FIELD_PREP(YT922X_PORT_SDS_MODE_M,
-					   YT92XX_SERDES_MODE_USXGMII);
-			break;
-		default:
+	/* internal UTPs no config needed */
+	if (yt922x_port_is_internal_utp(port)) {
+		if (interface != PHY_INTERFACE_MODE_INTERNAL) {
+			dev_err(dev, "Wrong mode %d on port %d\n",
+				interface, port);
 			return -EINVAL;
 		}
-		res = yt921x_intif_ext_write(priv, addr, YT922X_PORT_SDS_MODE,
-					     data);
-		if (res)
-			return res;
+		return 0;
+	}
+	/* SERDES init and interface configuration */
+	res = yt922x_sds_init(priv, port, interface);
+	if (res)
+		return res;
+	switch (interface) {
+	case PHY_INTERFACE_MODE_SGMII:
+		ctrl = YT92XX_SERDES_MODE_SGMII;
+		break;
+	case PHY_INTERFACE_MODE_100BASEX:
+		ctrl = YT92XX_SERDES_MODE_100BASEX;
+		break;
+	case PHY_INTERFACE_MODE_1000BASEX:
+		ctrl = YT92XX_SERDES_MODE_1000BASEX;
+		break;
+	case PHY_INTERFACE_MODE_2500BASEX:
+		ctrl = YT92XX_SERDES_MODE_2500BASEX;
+		break;
+	case PHY_INTERFACE_MODE_USXGMII:
+		ctrl = YT92XX_SERDES_MODE_USXGMII;
+		break;
+	case PHY_INTERFACE_MODE_10GBASER:
+		ctrl = YT92XX_SERDES_MODE_10GBASER;
 		break;
 	default:
 		return -EINVAL;
 	}
+	addr = yt922x_sds_phyaddr_get
+		(port, YT922X_PHY_REG_TYPE_SDS_COMMON_EXT,
+		 YT922X_PHY_REG_SPACE_SGMII);
+	if (addr < 0)
+		return -EINVAL;
 
-	return 0;
+	res = yt921x_intif_ext_read(priv, addr, YT922X_PORT_SDSn, &data);
+	if (res)
+		return res;
+	data &= ~YT922X_SERDES_MODE_M;
+	data |= ctrl;
+	res = yt921x_intif_ext_write(priv, addr, YT922X_PORT_SDSn, data);
+
+	return res;
+}
+
+static void
+yt922x_pcs_get_state(struct phylink_pcs *pcs,
+		      struct phylink_link_state *state)
+{
+	struct yt921x_port *pp = container_of(pcs, struct yt921x_port, pcs);
+	struct yt921x_priv *priv = pp->priv;
+	u16 phy_status, bmsr, lpa;
+	u32 status;
+	int res;
+
+	switch (state->interface) {
+	case PHY_INTERFACE_MODE_100BASEX:
+	case PHY_INTERFACE_MODE_1000BASEX:
+	case PHY_INTERFACE_MODE_2500BASEX:
+	case PHY_INTERFACE_MODE_SGMII:
+		mutex_lock(&priv->reg_lock);
+		/* BMSR link is latched low. Read twice before decoding. */
+		res = yt921x_intif_read(priv, pp->index, MII_BMSR, &bmsr);
+		if (!res)
+			res = yt921x_intif_read(priv, pp->index, MII_BMSR, &bmsr);
+		if (!res)
+			res = yt921x_intif_read(priv, pp->index, MII_LPA, &lpa);
+		mutex_unlock(&priv->reg_lock);
+		state->link = false;
+		state->an_complete = false;
+		state->pause = 0;
+		if (res)
+			return;
+		if (state->interface == PHY_INTERFACE_MODE_100BASEX) {
+			state->link = !!(bmsr & BMSR_LSTATUS);
+			state->speed = SPEED_100;
+			state->duplex = DUPLEX_FULL;
+		} else {
+			/* 6.12: no neg_mode here; the helper reads the Autoneg
+			 * advertising bit phylink sets for in-band modes instead.
+			 */
+			phylink_mii_c22_pcs_decode_state(state, bmsr, lpa);
+		}
+		return;
+	default:
+		break;
+	}
+
+	if (state->interface == PHY_INTERFACE_MODE_10GBASER) {
+		/* MAC status reflects software overrides, not the SerDes link. */
+		mutex_lock(&priv->reg_lock);
+		res = yt921x_intif_read(priv, pp->index,
+					YT922X_SDS_LINK_STATUS, &phy_status);
+		mutex_unlock(&priv->reg_lock);
+		state->link = !res && (phy_status & YT922X_SDS_LINK_UP);
+		state->speed = SPEED_10000;
+		state->duplex = DUPLEX_FULL;
+		state->pause = 0;
+		state->an_complete = state->link;
+		return;
+	}
+
+	mutex_lock(&priv->reg_lock);
+	res = yt921x_reg_read(priv, YT922X_PORTn_STATUS(pp->index), &status);
+	mutex_unlock(&priv->reg_lock);
+	if (res) {
+		state->link = false;
+		return;
+	}
+
+	state->link = !!(status & YT922X_PORT_STATUS_LINK);
+	state->duplex = status & YT922X_PORT_DUPLEX_FULL ?
+			DUPLEX_FULL : DUPLEX_HALF;
+	state->pause = 0;
+	if (status & YT922X_PORT_RX_PAUSE)
+		state->pause |= MLO_PAUSE_RX;
+	if (status & YT922X_PORT_TX_PAUSE)
+		state->pause |= MLO_PAUSE_TX;
+
+	switch (FIELD_GET(YT922X_PORT_SPEED_M, status)) {
+	case 0:
+		state->speed = SPEED_10;
+		break;
+	case 1:
+		state->speed = SPEED_100;
+		break;
+	case 2:
+		state->speed = SPEED_1000;
+		break;
+	case 3:
+		state->speed = SPEED_10000;
+		break;
+	case 4:
+		state->speed = SPEED_2500;
+		break;
+	case 5:
+		state->speed = SPEED_5000;
+		break;
+	default:
+		state->speed = SPEED_UNKNOWN;
+		state->link = false;
+		break;
+	}
+	state->an_complete = state->link;
+}
+
+static int yt922x_pcs_enable(struct phylink_pcs *pcs)
+{
+	struct yt921x_port *pp = container_of(pcs, struct yt921x_port, pcs);
+	struct yt921x_priv *priv = pp->priv;
+	int res;
+
+	mutex_lock(&priv->reg_lock);
+	res = yt921x_reg_set_bits(priv, YT922X_EN_PHY_VALUE,
+				   BIT(pp->index));
+	if (!res)
+		res = yt921x_reg_set_bits(priv, YT922X_EN_PHY_OVERWRITE,
+					   BIT(pp->index));
+	mutex_unlock(&priv->reg_lock);
+
+	return res;
+}
+
+static int yt922x_pcs_config(struct phylink_pcs *pcs,
+			      unsigned int neg_mode,
+			      phy_interface_t interface,
+			      const unsigned long *advertising,
+			      bool permit_pause_to_mac)
+{
+	struct yt921x_port *pp = container_of(pcs, struct yt921x_port, pcs);
+	struct yt921x_priv *priv = pp->priv;
+	u16 bmcr, old, value;
+	int res, err, adv;
+	bool changed = false;
+
+	adv = phylink_mii_c22_pcs_encode_advertisement(interface, advertising);
+	mutex_lock(&priv->reg_lock);
+	if (interface == PHY_INTERFACE_MODE_10GBASER) {
+		/* 10GBASE-R uses USXGMII with its rate forced and AN off. */
+		res = yt922x_fixed_usxgmii_config(priv, pp->index);
+		goto out;
+	}
+	if (interface == PHY_INTERFACE_MODE_USXGMII) {
+		/* The fixed CPU link is configured by mac_link_up. */
+		res = 0;
+		goto out;
+	}
+
+	res = read_poll_timeout(yt921x_intif_read, err,
+				err || !(bmcr & BMCR_RESET), 1000, 500000, false,
+				priv, pp->index, MII_BMCR, &bmcr);
+	if (err)
+		res = err;
+	if (res)
+		goto out;
+	if (adv >= 0) {
+		res = yt921x_intif_read(priv, pp->index, MII_ADVERTISE, &old);
+		if (res)
+			goto out;
+		if (old != adv) {
+			res = yt921x_intif_write(priv, pp->index, MII_ADVERTISE, adv);
+			if (res)
+				goto out;
+			changed = true;
+		}
+	}
+	value = bmcr & ~(BMCR_ANENABLE | BMCR_ISOLATE);
+	if (neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED)
+		value |= BMCR_ANENABLE;
+	res = yt921x_intif_write(priv, pp->index, MII_BMCR, value);
+	if (!res)
+		res = changed;
+out:
+	mutex_unlock(&priv->reg_lock);
+
+	return res;
+}
+
+static void yt922x_pcs_an_restart(struct phylink_pcs *pcs)
+{
+	struct yt921x_port *pp = container_of(pcs, struct yt921x_port, pcs);
+	struct yt921x_priv *priv = pp->priv;
+	u16 bmcr;
+	int res;
+
+	mutex_lock(&priv->reg_lock);
+	res = yt921x_intif_read(priv, pp->index, MII_BMCR, &bmcr);
+	if (!res && (bmcr & BMCR_ANENABLE))
+		res = yt921x_intif_write(priv, pp->index, MII_BMCR,
+					 bmcr | BMCR_ANRESTART);
+	mutex_unlock(&priv->reg_lock);
+	if (res)
+		dev_err_ratelimited(to_device(priv), "Port %d PCS restart failed: %d\n",
+				    pp->index, res);
+}
+
+static void yt922x_pcs_disable(struct phylink_pcs *pcs)
+{
+	struct yt921x_port *pp = container_of(pcs, struct yt921x_port, pcs);
+	struct yt921x_priv *priv = pp->priv;
+
+	mutex_lock(&priv->reg_lock);
+	yt921x_reg_clear_bits(priv, YT922X_EN_PHY_VALUE, BIT(pp->index));
+	yt921x_reg_set_bits(priv, YT922X_EN_PHY_OVERWRITE, BIT(pp->index));
+	mutex_unlock(&priv->reg_lock);
+}
+
+static const struct phylink_pcs_ops yt922x_pcs_ops = {
+	.pcs_enable	= yt922x_pcs_enable,
+	.pcs_config	= yt922x_pcs_config,
+	.pcs_an_restart	= yt922x_pcs_an_restart,
+	.pcs_disable	= yt922x_pcs_disable,
+	.pcs_get_state	= yt922x_pcs_get_state,
+};
+
+static struct phylink_pcs *
+yt922x_phylink_mac_select_pcs(struct phylink_config *config,
+			       phy_interface_t interface)
+{
+	struct dsa_port *dp = dsa_phylink_to_port(config);
+	struct yt921x_priv *priv = to_yt921x_priv(dp->ds);
+
+	if (!yt922x_port_is_internal_sds(dp->index))
+		return NULL;
+
+	return &priv->ports[dp->index].pcs;
 }
 
 static void
@@ -5424,6 +6073,7 @@ yt922x_phylink_mac_config(struct phylink_config *config, unsigned int mode,
 }
 
 static const struct phylink_mac_ops yt922x_phylink_mac_ops = {
+	.mac_select_pcs	= yt922x_phylink_mac_select_pcs,
 	.mac_link_down	= yt922x_phylink_mac_link_down,
 	.mac_link_up	= yt922x_phylink_mac_link_up,
 	.mac_config	= yt922x_phylink_mac_config,
@@ -5463,6 +6113,8 @@ yt922x_dsa_phylink_get_caps(struct dsa_switch *ds, int port,
 				  config->supported_interfaces);
 			config->mac_capabilities |= MAC_2500FD;
 			__set_bit(PHY_INTERFACE_MODE_USXGMII,
+				  config->supported_interfaces);
+			__set_bit(PHY_INTERFACE_MODE_10GBASER,
 				  config->supported_interfaces);
 			config->mac_capabilities |= MAC_2500FD;
 			config->mac_capabilities |= MAC_5000FD;
@@ -5539,6 +6191,8 @@ static int yt922x_chip_detect(struct yt921x_priv *priv)
 
 static int yt922x_chip_reset(struct yt921x_priv *priv)
 {
+	struct device *dev = to_device(priv);
+	u16 eth_p_tag;
 	u32 val;
 	int res;
 
@@ -5558,6 +6212,17 @@ static int yt922x_chip_reset(struct yt921x_priv *priv)
 	if (res)
 		return res;
 
+	/* TPID check */
+	res = yt921x_reg_read(priv, YT921X_CPU_TAG_TPID, &val);
+	if (res)
+		return res;
+	eth_p_tag = FIELD_GET(YT921X_CPU_TAG_TPID_TPID_M, val);
+	if (eth_p_tag != ETH_P_YT921X) {
+		dev_err(dev, "Tag type 0x%x != 0x%x\n", eth_p_tag,
+			ETH_P_YT921X);
+		return -EINVAL;
+	}
+
 	return 0;
 }
 
@@ -5574,10 +6239,10 @@ static int yt922x_chip_setup_dsa(struct yt921x_priv *priv)
 		return res;
 
 	ctrl = 0;
-	for (int i = 0; i < priv->chip_info->ports; i++)
+	for (int i = 0; i < priv->series_info->ports; i++)
 		ctrl |= YT922X_ACT_UNK_ACTn_TRAP(i);
 	cpu_ports_mask = priv->cpu_ports_mask;
-	for_each_set_bit(port, &cpu_ports_mask, priv->chip_info->ports) {
+	for_each_set_bit(port, &cpu_ports_mask, priv->series_info->ports) {
 		ctrl &= ~YT922X_ACT_UNK_ACTn_M(port);
 		ctrl |= YT922X_ACT_UNK_ACTn_DROP(port);
 	}
@@ -5608,43 +6273,66 @@ static int yt922x_chip_setup(struct yt921x_priv *priv)
 	return 0;
 }
 
-static int yt922x_cpu_tag_mode_set(struct yt921x_priv *priv)
+static int yt922x_cpu_tag_mode_set(struct yt921x_priv *priv,
+				   enum dsa_tag_protocol proto)
 {
-	struct device *dev = to_device(priv);
-	u16 eth_p_tag;
-	u32 val;
-	u32 val1;
-	int res;
+	static const u32 regs[] = {
+		YT921X_CPU_TAG_TPID,
+		YT922X_CPU_TAG_RX_CTRL,
+		YT922X_CPU_TAG_TX_CTRL,
+	};
+	u32 saved[ARRAY_SIZE(regs)], next[ARRAY_SIZE(regs)];
+	bool four_byte = proto == DSA_TAG_PROTO_YT922X_4B;
+	int i, res, err;
 
-	/* cpu tag mode set */
-	res = yt921x_reg_read(priv, YT922X_CPU_TAG_RX_CTRL, &val);
-	if (res)
-		return res;
-	res = yt921x_reg_read(priv, YT922X_CPU_TAG_TX_CTRL, &val1);
-	if (res)
-		return res;
-	val &= ~YT922X_CPU_TAG_RX_MODE;
-	val1 &= ~YT922X_CPU_TAG_TX_MODE;
-	val1 &= ~YT922X_CPU_TAG_TX_TYPE;
-	res = yt921x_reg_write(priv, YT922X_CPU_TAG_RX_CTRL, val);
-	if (res)
-		return res;
-	res = yt921x_reg_write(priv, YT922X_CPU_TAG_TX_CTRL, val1);
-	if (res)
-		return res;
+	if (proto != DSA_TAG_PROTO_YT922X && !four_byte)
+		return -EOPNOTSUPP;
 
-	/* tpid check */
-	res = yt921x_reg_read(priv, YT921X_CPU_TAG_TPID, &val);
-	if (res)
-		return res;
-	eth_p_tag = FIELD_GET(YT921X_CPU_TAG_TPID_TPID_M, val);
-	if (eth_p_tag != ETH_P_YT921X) {
-		dev_err(dev, "Tag type 0x%x != 0x%x\n", eth_p_tag,
-			ETH_P_YT921X);
-		return -EINVAL;
+	for (i = 0; i < ARRAY_SIZE(regs); i++) {
+		res = yt921x_reg_read(priv, regs[i], &saved[i]);
+		if (res)
+			return res;
+		next[i] = saved[i];
+	}
+	next[0] &= ~YT921X_CPU_TAG_TPID_TPID_M;
+	next[0] |= FIELD_PREP(YT921X_CPU_TAG_TPID_TPID_M,
+			      four_byte ? ETH_P_8021Q : ETH_P_YT921X);
+	next[1] &= ~YT922X_CPU_TAG_RX_MODE;
+	next[2] &= ~(YT922X_CPU_TAG_TX_MODE | YT922X_CPU_TAG_TX_TYPE);
+	if (four_byte) {
+		next[1] |= YT922X_CPU_TAG_RX_MODE;
+		next[2] |= YT922X_CPU_TAG_TX_MODE;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(regs); i++) {
+		res = yt921x_reg_write(priv, regs[i], next[i]);
+		if (res)
+			goto restore;
 	}
 
 	return 0;
+
+restore:
+	for (i = ARRAY_SIZE(regs) - 1; i >= 0; i--) {
+		err = yt921x_reg_write(priv, regs[i], saved[i]);
+		if (err)
+			dev_err(to_device(priv), "Failed to restore tag register %#x: %d\n",
+				regs[i], err);
+	}
+	return res;
+}
+
+static int yt922x_dsa_change_tag_protocol(struct dsa_switch *ds,
+					  enum dsa_tag_protocol proto)
+{
+	struct yt921x_priv *priv = to_yt921x_priv(ds);
+	int res;
+
+	mutex_lock(&priv->reg_lock);
+	res = yt922x_cpu_tag_mode_set(priv, proto);
+	mutex_unlock(&priv->reg_lock);
+
+	return res;
 }
 
 static int yt922x_cpu_port_set(struct yt921x_priv *priv)
@@ -5654,7 +6342,7 @@ static int yt922x_cpu_port_set(struct yt921x_priv *priv)
 	int res;
 
 	/* cpu tag mode */
-	res = yt922x_cpu_tag_mode_set(priv);
+	res = yt922x_cpu_tag_mode_set(priv, DSA_TAG_PROTO_YT922X);
 	if (res)
 		return res;
 
@@ -5683,7 +6371,23 @@ static int yt922x_dsa_setup(struct dsa_switch *ds)
 	struct device_node *child;
 	int res;
 
+	for (size_t i = 0; i < ARRAY_SIZE(priv->ports); i++) {
+		struct yt921x_port *pp = &priv->ports[i];
+
+		pp->index = i;
+		pp->priv = priv;
+		pp->pcs.ops = &yt922x_pcs_ops;
+		pp->pcs.poll = true;
+		pp->fixed_usxgmii_10g = false;
+		pp->conduit_operational = false;
+		pp->yt922x_bridge = NULL;
+		pp->yt922x_stp_state = BR_STATE_DISABLED;
+		pp->yt922x_learning = false;
+	}
+
 	mutex_lock(&priv->reg_lock);
+	priv->cpu_mac_stopping = false;
+	priv->yt922x_bridge_broken = false;
 	res = yt922x_chip_reset(priv);
 	mutex_unlock(&priv->reg_lock);
 	if (res)
@@ -5714,21 +6418,603 @@ static int yt922x_dsa_setup(struct dsa_switch *ds)
 	return 0;
 }
 
+static void yt922x_dsa_teardown(struct dsa_switch *ds)
+{
+	yt922x_cpu_mac_stop(to_yt921x_priv(ds));
+}
+
+#define YT922X_FDB_INPUT(n)	(0x180000 + 4 * (n))
+#define YT922X_FDB_COMMAND	0x180020
+#define YT922X_FDB_RESULT		0x180024
+#define YT922X_FDB_DONE		BIT(15)
+#define YT922X_FDB_FLUSH_PORT	BIT(8)
+#define YT922X_FDB_FLUSH		(4 << 1)
+#define YT922X_FDB_START		BIT(0)
+#define YT922X_AGEING_TIME	0x18043c
+
+#define YT922X_FDB_OUTPUT(n)	(0x180010 + 4 * (n))
+#define YT922X_FDB_NOT_FOUND	BIT(14)
+#define YT922X_FDB_FULL		BIT(12)
+#define YT922X_FDB_INDEX		GENMASK(11, 0)
+#define YT922X_FDB_CMD_INDEX	GENMASK(24, 13)
+#define YT922X_FDB_BY_INDEX	BIT(12)
+#define YT922X_FDB_NEXT_UC	(2 << 4)
+#define YT922X_FDB_ADD		(0 << 1)
+#define YT922X_FDB_DELETE		BIT(1)
+#define YT922X_FDB_GET		(2 << 1)
+#define YT922X_FDB_NEXT		(3 << 1)
+#define YT922X_FDB_VID		GENMASK(27, 16)
+#define YT922X_FDB_STATUS		GENMASK(30, 28)
+#define YT922X_FDB_STATIC		7
+#define YT922X_FDB_VALID		BIT(23)
+#define YT922X_FDB_IPMC		BIT(22)
+#define YT922X_FDB_LAG		BIT(20)
+#define YT922X_FDB_PENDING	BIT(19)
+#define YT922X_FDB_PORT		GENMASK(15, 12)
+#define YT922X_BRIDGE_VID		1
+
+struct yt922x_fdb_entry {
+	struct list_head list;
+	struct net_device *bridge;
+	unsigned char addr[ETH_ALEN];
+	u8 port;
+	u8 vids;
+};
+
+static struct yt922x_fdb_entry *
+yt922x_fdb_find(struct yt921x_priv *priv, const unsigned char *addr)
+{
+	struct yt922x_fdb_entry *entry;
+
+	list_for_each_entry(entry, &priv->yt922x_fdb_entries, list)
+		if (ether_addr_equal(entry->addr, addr))
+			return entry;
+	return NULL;
+}
+
+static void yt922x_fdb_cleanup(void *data)
+{
+	struct yt921x_priv *priv = data;
+	struct yt922x_fdb_entry *entry, *next;
+
+	list_for_each_entry_safe(entry, next, &priv->yt922x_fdb_entries, list) {
+		list_del(&entry->list);
+		kfree(entry);
+	}
+}
+
+/* Caller holds reg_lock for the entire indirect-table transaction. */
+static int yt922x_fdb_op(struct yt921x_priv *priv, const u32 in[4],
+			 u32 command, u32 out[4], u32 *result)
+{
+	int i, ret;
+
+	for (i = 0; i < 4; i++) {
+		ret = yt921x_reg_write(priv, YT922X_FDB_INPUT(i), in[i]);
+		if (ret)
+			return ret;
+	}
+	ret = yt921x_reg_write(priv, YT922X_FDB_COMMAND,
+			       command | YT922X_FDB_START);
+	if (ret)
+		return ret;
+	*result = YT922X_FDB_DONE;
+	ret = yt921x_reg_wait(priv, YT922X_FDB_RESULT, YT922X_FDB_DONE, result);
+	if (ret || !out)
+		return ret;
+	for (i = 0; i < 4; i++) {
+		ret = yt921x_reg_read(priv, YT922X_FDB_OUTPUT(i), &out[i]);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+static void yt922x_fdb_key(const unsigned char *addr, u32 entry[4])
+{
+	entry[0] = get_unaligned_be32(addr);
+	/* Untagged learning uses the reset PVID, not Linux's VID 0. */
+	entry[1] = FIELD_PREP(YT922X_FDB_VID, YT922X_BRIDGE_VID) |
+		   get_unaligned_be16(addr + 4);
+	entry[2] = 0;
+	entry[3] = 0;
+}
+
+static bool yt922x_fdb_bridge_supported(struct yt921x_priv *priv, int port,
+					u16 vid, struct dsa_db db)
+{
+	struct dsa_port *dp;
+
+	if (vid > YT922X_BRIDGE_VID || db.type != DSA_DB_BRIDGE ||
+	    br_vlan_enabled(db.bridge.dev))
+		return false;
+	if (dsa_is_user_port(&priv->ds, port))
+		return priv->ports[port].yt922x_bridge == db.bridge.dev;
+	if (!dsa_is_cpu_port(&priv->ds, port))
+		return false;
+	dsa_switch_for_each_user_port(dp, &priv->ds)
+		if (priv->ports[dp->index].yt922x_bridge == db.bridge.dev)
+			return true;
+	return false;
+}
+
+static int
+yt922x_dsa_port_fdb_add(struct dsa_switch *ds, int port,
+			const unsigned char *addr, u16 vid, struct dsa_db db)
+{
+	struct yt921x_priv *priv = to_yt921x_priv(ds);
+	struct yt922x_fdb_entry *fdb, *new = NULL;
+	u32 entry[4], result;
+	int ret;
+
+	if (!is_valid_ether_addr(addr))
+		return -EOPNOTSUPP;
+	yt922x_fdb_key(addr, entry);
+	entry[1] |= FIELD_PREP(YT922X_FDB_STATUS, YT922X_FDB_STATIC);
+	entry[2] = YT922X_FDB_VALID | FIELD_PREP(YT922X_FDB_PORT, port);
+
+	mutex_lock(&priv->reg_lock);
+	if (priv->yt922x_bridge_broken) {
+		ret = -EIO;
+	} else if (!yt922x_fdb_bridge_supported(priv, port, vid, db)) {
+		ret = -EOPNOTSUPP;
+	} else {
+		fdb = yt922x_fdb_find(priv, addr);
+		/* An inactive VLAN entry cannot redirect the untagged entry. */
+		if (fdb && vid && (fdb->vids & BIT(0)) && fdb->port != port) {
+			ret = -EOPNOTSUPP;
+			goto out;
+		}
+		if (!fdb) {
+			new = kzalloc(sizeof(*new), GFP_KERNEL);
+			if (!new) {
+				ret = -ENOMEM;
+				goto out;
+			}
+			fdb = new;
+		}
+		ret = yt922x_fdb_op(priv, entry, YT922X_FDB_ADD, NULL, &result);
+		if (!ret && (result & (YT922X_FDB_FULL | YT922X_FDB_NOT_FOUND)))
+			ret = -ENOSPC;
+		if (!ret) {
+			if (new) {
+				ether_addr_copy(fdb->addr, addr);
+				list_add_tail(&fdb->list, &priv->yt922x_fdb_entries);
+				new = NULL;
+			}
+			/* A move supersedes aliases belonging to the old port. */
+			if (fdb->port != port || fdb->bridge != db.bridge.dev)
+				fdb->vids = 0;
+			fdb->port = port;
+			fdb->bridge = db.bridge.dev;
+			fdb->vids |= BIT(vid);
+		}
+	}
+out:
+	mutex_unlock(&priv->reg_lock);
+	kfree(new);
+	return ret;
+}
+
+static int
+yt922x_dsa_port_fdb_del(struct dsa_switch *ds, int port,
+			const unsigned char *addr, u16 vid, struct dsa_db db)
+{
+	struct yt921x_priv *priv = to_yt921x_priv(ds);
+	struct yt922x_fdb_entry *fdb;
+	u32 entry[4], out[4], result;
+	int ret = 0;
+
+	if (vid > YT922X_BRIDGE_VID || db.type != DSA_DB_BRIDGE ||
+	    !is_valid_ether_addr(addr))
+		return -EOPNOTSUPP;
+	yt922x_fdb_key(addr, entry);
+	mutex_lock(&priv->reg_lock);
+	fdb = yt922x_fdb_find(priv, addr);
+	if (!fdb || fdb->bridge != db.bridge.dev || fdb->port != port ||
+	    !(fdb->vids & BIT(vid)))
+		goto out;
+	/* The bridge also announces its default VLAN while filtering is off.
+	 * VID 0 and VID 1 share one hardware key, but have separate lifetimes.
+	 */
+	if (fdb->vids & ~BIT(vid)) {
+		fdb->vids &= ~BIT(vid);
+		goto out;
+	}
+	ret = yt922x_fdb_op(priv, entry, YT922X_FDB_GET, out, &result);
+	if (ret)
+		goto out;
+	if (result & YT922X_FDB_NOT_FOUND)
+		goto forget;
+	/* A move can install the new destination before the old delete is
+	 * delivered. Never delete another port's entry or a learned entry.
+	 */
+	if (!(out[2] & YT922X_FDB_VALID) ||
+	    (out[2] & (YT922X_FDB_IPMC | YT922X_FDB_LAG)) ||
+	    FIELD_GET(YT922X_FDB_STATUS, out[1]) != YT922X_FDB_STATIC ||
+	    FIELD_GET(YT922X_FDB_PORT, out[2]) != port)
+		goto forget;
+	ret = yt922x_fdb_op(priv, entry, YT922X_FDB_DELETE, NULL, &result);
+	if (ret)
+		goto out;
+forget:
+	list_del(&fdb->list);
+	kfree(fdb);
+out:
+	mutex_unlock(&priv->reg_lock);
+	return ret;
+}
+
+static int yt922x_dsa_port_fdb_dump(struct dsa_switch *ds, int port,
+				    dsa_fdb_dump_cb_t *cb, void *data)
+{
+	struct yt921x_priv *priv = to_yt921x_priv(ds);
+	u32 in[4] = {}, entry[4], command, result, index = 0, next;
+	unsigned char addr[ETH_ALEN];
+	int i, ret;
+
+	/* NEXT excludes its starting index, so read slot zero explicitly. */
+	for (i = 0; i <= FIELD_MAX(YT922X_FDB_INDEX); i++) {
+		command = YT922X_FDB_BY_INDEX |
+			  FIELD_PREP(YT922X_FDB_CMD_INDEX, index) |
+			  (i ? YT922X_FDB_NEXT_UC | YT922X_FDB_NEXT : YT922X_FDB_GET);
+		mutex_lock(&priv->reg_lock);
+		ret = yt922x_fdb_op(priv, in, command, entry, &result);
+		mutex_unlock(&priv->reg_lock);
+		if (ret)
+			return ret;
+		if (result & YT922X_FDB_NOT_FOUND) {
+			if (i)
+				break;
+			continue;
+		}
+		next = FIELD_GET(YT922X_FDB_INDEX, result);
+		if (i && next <= index)
+			return -EIO;
+		index = next;
+		if (!(entry[2] & YT922X_FDB_VALID) ||
+		    (entry[2] & (YT922X_FDB_IPMC | YT922X_FDB_LAG |
+				 YT922X_FDB_PENDING)) ||
+		    !FIELD_GET(YT922X_FDB_STATUS, entry[1]) ||
+		    FIELD_GET(YT922X_FDB_PORT, entry[2]) != port ||
+		    FIELD_GET(YT922X_FDB_VID, entry[1]) != YT922X_BRIDGE_VID)
+			continue;
+		put_unaligned_be32(entry[0], addr);
+		put_unaligned_be16(entry[1] & 0xffff, addr + 4);
+		if (!is_valid_ether_addr(addr))
+			continue;
+		ret = cb(addr, 0, FIELD_GET(YT922X_FDB_STATUS, entry[1]) ==
+			 YT922X_FDB_STATIC, data);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+/* Whale's indirect FDB engine is different from Tiger's. The command below
+ * removes dynamic unicast entries learned on one physical port. In
+ * particular, bit 7 (flush static entries) must remain clear.
+ * Caller holds reg_lock throughout the input/command/result transaction.
+ */
+static int yt922x_bridge_fast_age(struct yt921x_priv *priv, int port)
+{
+	u32 done = YT922X_FDB_DONE;
+	int i, ret;
+
+	for (i = 0; i < 4; i++) {
+		ret = yt921x_reg_write(priv, YT922X_FDB_INPUT(i),
+				       i ? 0 : port);
+		if (ret)
+			return ret;
+	}
+	ret = yt921x_reg_write(priv, YT922X_FDB_COMMAND,
+			       YT922X_FDB_FLUSH_PORT | YT922X_FDB_FLUSH |
+			       YT922X_FDB_START);
+	if (ret)
+		return ret;
+
+	return yt921x_reg_wait(priv, YT922X_FDB_RESULT, YT922X_FDB_DONE, &done);
+}
+
+/* An isolation bit blocks an egress port. Use the matrix for STP as well:
+ * non-forwarding ports cannot exchange frames with any user port, while
+ * BPDUs and other control traffic can still reach the software bridge.
+ * Do not copy Tiger's STP state encoding into Whale's STP register.
+ */
+static int yt922x_bridge_matrix(struct yt921x_priv *priv)
+{
+	struct dsa_port *dp, *other;
+	int ret;
+
+	dsa_switch_for_each_user_port(dp, &priv->ds) {
+		struct yt921x_port *p = &priv->ports[dp->index];
+		u32 allowed = priv->cpu_ports_mask;
+
+		if (!priv->yt922x_bridge_broken && p->yt922x_bridge &&
+		    p->yt922x_stp_state == BR_STATE_FORWARDING) {
+			dsa_switch_for_each_user_port(other, &priv->ds) {
+				struct yt921x_port *q = &priv->ports[other->index];
+
+				if (dp != other &&
+				    p->yt922x_bridge == q->yt922x_bridge &&
+				    q->yt922x_stp_state == BR_STATE_FORWARDING)
+					allowed |= BIT(other->index);
+			}
+		}
+		ret = yt921x_reg_write(priv, YT922X_PORTn_ISOLATION(dp->index),
+				       ~allowed);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+static int yt922x_bridge_learning(struct yt921x_priv *priv, int port)
+{
+	struct yt921x_port *p = &priv->ports[port];
+	bool learn = !priv->yt922x_bridge_broken &&
+		     p->yt922x_bridge && p->yt922x_learning &&
+		     (p->yt922x_stp_state == BR_STATE_LEARNING ||
+		      p->yt922x_stp_state == BR_STATE_FORWARDING);
+
+	return yt921x_reg_update_bits(priv, YT922X_PORTn_LEARN(port),
+				      YT922X_PORT_LEARN_DIS,
+				      learn ? 0 : YT922X_PORT_LEARN_DIS);
+}
+
+/* Void switchdev callbacks cannot propagate bus errors. Quarantine the
+ * hardware bridge on error, rather than leave a stale forwarding matrix.
+ * Recovery requires reinitializing the switch.
+ */
+static void yt922x_bridge_quarantine(struct yt921x_priv *priv, int error)
+{
+	struct dsa_port *dp;
+	int ret;
+
+	priv->yt922x_bridge_broken = true;
+	dsa_switch_for_each_user_port(dp, &priv->ds) {
+		ret = yt921x_reg_set_bits(priv, YT922X_PORTn_LEARN(dp->index),
+					  YT922X_PORT_LEARN_DIS);
+		if (ret)
+			dev_err(to_device(priv), "Cannot stop learning on port %d: %d\n",
+				dp->index, ret);
+		ret = yt921x_reg_write(priv, YT922X_PORTn_ISOLATION(dp->index),
+				       ~(u32)priv->cpu_ports_mask);
+		if (ret)
+			dev_err(to_device(priv), "Cannot isolate port %d: %d\n",
+				dp->index, ret);
+	}
+	dev_err(to_device(priv), "YT9224 bridge quarantined after error %d; reinitialize switch\n",
+		error);
+}
+
+static int
+yt922x_dsa_port_bridge_join(struct dsa_switch *ds, int port,
+			    struct dsa_bridge bridge, bool *tx_fwd_offload,
+			    struct netlink_ext_ack *extack)
+{
+	struct yt921x_priv *priv = to_yt921x_priv(ds);
+	struct yt921x_port *p = &priv->ports[port];
+	struct dsa_port *dp;
+	int ret = 0;
+
+	if (br_vlan_enabled(bridge.dev) || br_mst_enabled(bridge.dev)) {
+		NL_SET_ERR_MSG_MOD(extack, "YT9224 VLAN/MST bridge offload is not implemented yet");
+		return -EOPNOTSUPP;
+	}
+	/* DSA does not inherit every bridge flag after joining. Validate the
+	 * pre-existing settings too, before opening any forwarding path.
+	 */
+	if (br_port_flag_is_set(dsa_to_port(ds, port)->user, BR_HAIRPIN_MODE) ||
+	    br_port_flag_is_set(dsa_to_port(ds, port)->user, BR_ISOLATED) ||
+	    br_port_flag_is_set(dsa_to_port(ds, port)->user, BR_PORT_LOCKED) ||
+	    !br_port_flag_is_set(dsa_to_port(ds, port)->user, BR_BCAST_FLOOD)) {
+		NL_SET_ERR_MSG_MOD(extack, "Unsupported YT9224 bridge port flags");
+		return -EOPNOTSUPP;
+	}
+
+	mutex_lock(&priv->reg_lock);
+	if (priv->yt922x_bridge_broken) {
+		ret = -EIO;
+		goto out;
+	}
+	dsa_switch_for_each_user_port(dp, ds) {
+		struct net_device *b = priv->ports[dp->index].yt922x_bridge;
+
+		if (b && b != bridge.dev) {
+			NL_SET_ERR_MSG_MOD(extack,
+					   "YT9224 supports only one hardware bridge");
+			ret = -EOPNOTSUPP;
+			goto out;
+		}
+	}
+	p->yt922x_bridge = bridge.dev;
+	p->yt922x_stp_state = BR_STATE_DISABLED;
+	p->yt922x_learning = false;
+	ret = yt922x_bridge_learning(priv, port);
+	if (!ret)
+		ret = yt922x_bridge_fast_age(priv, port);
+	if (!ret)
+		ret = yt922x_bridge_matrix(priv);
+	if (ret) {
+		p->yt922x_bridge = NULL;
+		yt922x_bridge_quarantine(priv, ret);
+	}
+	/* CPU TX still targets individual ports, not the hardware bridge. */
+	*tx_fwd_offload = false;
+out:
+	mutex_unlock(&priv->reg_lock);
+	return ret;
+}
+
+static void
+yt922x_dsa_port_bridge_leave(struct dsa_switch *ds, int port,
+			     struct dsa_bridge bridge)
+{
+	struct yt921x_priv *priv = to_yt921x_priv(ds);
+	struct yt921x_port *p = &priv->ports[port];
+	int ret;
+
+	mutex_lock(&priv->reg_lock);
+	p->yt922x_bridge = NULL;
+	p->yt922x_learning = false;
+	p->yt922x_stp_state = BR_STATE_DISABLED;
+	ret = yt922x_bridge_learning(priv, port);
+	if (!ret)
+		ret = yt922x_bridge_matrix(priv);
+	if (!ret)
+		ret = yt922x_bridge_fast_age(priv, port);
+	if (ret)
+		yt922x_bridge_quarantine(priv, ret);
+	mutex_unlock(&priv->reg_lock);
+}
+
+static void
+yt922x_dsa_port_stp_state_set(struct dsa_switch *ds, int port, u8 state)
+{
+	struct yt921x_priv *priv = to_yt921x_priv(ds);
+	struct yt921x_port *p = &priv->ports[port];
+	int ret;
+
+	mutex_lock(&priv->reg_lock);
+	if (!p->yt922x_bridge || priv->yt922x_bridge_broken)
+		goto out;
+	p->yt922x_stp_state = state;
+	ret = yt922x_bridge_learning(priv, port);
+	if (!ret)
+		ret = yt922x_bridge_matrix(priv);
+	if (!ret && state != BR_STATE_FORWARDING && state != BR_STATE_LEARNING)
+		ret = yt922x_bridge_fast_age(priv, port);
+	if (ret)
+		yt922x_bridge_quarantine(priv, ret);
+out:
+	mutex_unlock(&priv->reg_lock);
+}
+
+static void yt922x_dsa_port_fast_age(struct dsa_switch *ds, int port)
+{
+	struct yt921x_priv *priv = to_yt921x_priv(ds);
+	int ret;
+
+	mutex_lock(&priv->reg_lock);
+	if (priv->ports[port].yt922x_bridge && !priv->yt922x_bridge_broken) {
+		ret = yt922x_bridge_fast_age(priv, port);
+		if (ret)
+			yt922x_bridge_quarantine(priv, ret);
+	}
+	mutex_unlock(&priv->reg_lock);
+}
+
+static int
+yt922x_dsa_port_pre_bridge_flags(struct dsa_switch *ds, int port,
+				 struct switchdev_brport_flags flags,
+				 struct netlink_ext_ack *extack)
+{
+	if (flags.mask & ~(BR_LEARNING | BR_FLOOD | BR_MCAST_FLOOD |
+			   BR_BCAST_FLOOD | BR_HAIRPIN_MODE | BR_ISOLATED |
+			   BR_PORT_LOCKED))
+		return -EOPNOTSUPP;
+	if (flags.mask & flags.val &
+	    (BR_HAIRPIN_MODE | BR_ISOLATED | BR_PORT_LOCKED)) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "YT9224 hairpin, isolated and locked ports are not supported yet");
+		return -EINVAL;
+	}
+	if ((flags.mask & BR_BCAST_FLOOD) && !(flags.val & BR_BCAST_FLOOD)) {
+		NL_SET_ERR_MSG_MOD(extack, "YT9224 hardware bridge requires broadcast flooding");
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int
+yt922x_dsa_port_bridge_flags(struct dsa_switch *ds, int port,
+			     struct switchdev_brport_flags flags,
+			     struct netlink_ext_ack *extack)
+{
+	struct yt921x_priv *priv = to_yt921x_priv(ds);
+	struct yt921x_port *p = &priv->ports[port];
+	int ret;
+
+	ret = yt922x_dsa_port_pre_bridge_flags(ds, port, flags, extack);
+	if (ret)
+		return ret;
+	/* Unknown unicast and multicast are trapped; the software bridge
+	 * applies BR_FLOOD/BR_MCAST_FLOOD when it replicates these packets.
+	 */
+	if (!(flags.mask & BR_LEARNING))
+		return 0;
+	mutex_lock(&priv->reg_lock);
+	if (priv->yt922x_bridge_broken) {
+		ret = -EIO;
+		goto out;
+	}
+	p->yt922x_learning = !!(flags.val & BR_LEARNING);
+	ret = yt922x_bridge_learning(priv, port);
+	if (!ret && !p->yt922x_learning && p->yt922x_bridge)
+		ret = yt922x_bridge_fast_age(priv, port);
+	if (ret)
+		yt922x_bridge_quarantine(priv, ret);
+out:
+	mutex_unlock(&priv->reg_lock);
+	return ret;
+}
+
+static int
+yt922x_dsa_port_vlan_filtering(struct dsa_switch *ds, int port, bool filtering,
+			       struct netlink_ext_ack *extack)
+{
+	struct yt921x_priv *priv = to_yt921x_priv(ds);
+
+	if (filtering && priv->ports[port].yt922x_bridge) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "Disable YT9224 bridge offload before enabling VLAN filtering");
+		return -EINVAL;
+	}
+	return filtering ? -EOPNOTSUPP : 0;
+}
+
+static int yt922x_dsa_set_ageing_time(struct dsa_switch *ds, unsigned int msecs)
+{
+	struct yt921x_priv *priv = to_yt921x_priv(ds);
+	int ret;
+
+	mutex_lock(&priv->reg_lock);
+	ret = yt921x_reg_write(priv, YT922X_AGEING_TIME,
+			       clamp_t(u32, msecs / 6000, 1, U16_MAX));
+	mutex_unlock(&priv->reg_lock);
+	return ret;
+}
+
 static const struct dsa_switch_ops yt922x_dsa_switch_ops = {
+	.port_bridge_join	= yt922x_dsa_port_bridge_join,
+	.port_fdb_add		= yt922x_dsa_port_fdb_add,
+	.port_fdb_del		= yt922x_dsa_port_fdb_del,
+	.port_fdb_dump		= yt922x_dsa_port_fdb_dump,
+	.port_bridge_leave	= yt922x_dsa_port_bridge_leave,
+	.port_stp_state_set	= yt922x_dsa_port_stp_state_set,
+	.port_fast_age		= yt922x_dsa_port_fast_age,
+	.port_pre_bridge_flags	= yt922x_dsa_port_pre_bridge_flags,
+	.port_bridge_flags	= yt922x_dsa_port_bridge_flags,
+	.port_vlan_filtering	= yt922x_dsa_port_vlan_filtering,
+	.set_ageing_time		= yt922x_dsa_set_ageing_time,
 	/* port */
 	.get_tag_protocol	= yt922x_dsa_get_tag_protocol,
+	.change_tag_protocol	= yt922x_dsa_change_tag_protocol,
 	.phylink_get_caps	= yt922x_dsa_phylink_get_caps,
 	.port_setup		= yt922x_dsa_port_setup,
 	/* chip */
 	.setup			= yt922x_dsa_setup,
+	.teardown		= yt922x_dsa_teardown,
+	.conduit_state_change	= yt922x_conduit_state_change,
 };
 
-static const struct yt92xx_chip_info yt92xx_chip_info_table[] = {
+static const struct yt92xx_series yt92xx_series_table[] = {
 	[YT9215] = {
 		.mode = YT9215,
 		.name = "motorcomm yt9215",
 		.ports = YT921X_PORT_NUM,
-		.lag_id = YT921X_LAG_NUM,
+		.num_lag_ids = 0,
 		.ageing_time_min = 1 * 5000,
 		.ageing_time_max = U16_MAX * 5000,
 		.switch_ops = &yt921x_dsa_switch_ops,
@@ -5738,7 +7024,7 @@ static const struct yt92xx_chip_info yt92xx_chip_info_table[] = {
 		.mode = YT9224,
 		.name = "motorcomm yt9224",
 		.ports = YT922X_PORT_NUM,
-		.lag_id = YT922X_LAG_NUM,
+		.num_lag_ids = YT922X_LAG_NUM,
 		.ageing_time_min = 1 * 6000,
 		.ageing_time_max = U16_MAX * 6000,
 		.switch_ops = &yt922x_dsa_switch_ops,
@@ -5746,27 +7032,31 @@ static const struct yt92xx_chip_info yt92xx_chip_info_table[] = {
 	},
 };
 
-static void yt92xx_mdio_shutdown(struct mdio_device *mdiodev)
+static void yt921x_mdio_shutdown(struct mdio_device *mdiodev)
 {
 	struct yt921x_priv *priv = mdiodev_get_drvdata(mdiodev);
 
 	if (!priv)
 		return;
 
+	yt922x_cpu_mac_stop(priv);
 	dsa_switch_shutdown(&priv->ds);
 }
 
-static void yt92xx_mdio_remove(struct mdio_device *mdiodev)
+static void yt921x_mdio_remove(struct mdio_device *mdiodev)
 {
 	struct yt921x_priv *priv = mdiodev_get_drvdata(mdiodev);
 
 	if (!priv)
 		return;
+
+	yt922x_cpu_mac_stop(priv);
 
 	for (size_t i = ARRAY_SIZE(priv->ports); i-- > 0; ) {
 		struct yt921x_port *pp = &priv->ports[i];
 
-		disable_delayed_work_sync(&pp->mib_read);
+		if (pp->mib_working)
+			disable_delayed_work_sync(&pp->mib_read);
 	}
 
 	dsa_unregister_switch(&priv->ds);
@@ -5788,13 +7078,14 @@ static void yt92xx_mdio_remove(struct mdio_device *mdiodev)
 	mutex_destroy(&priv->reg_lock);
 }
 
-static int yt92xx_mdio_probe(struct mdio_device *mdiodev)
+static int yt921x_mdio_probe(struct mdio_device *mdiodev)
 {
-	const struct yt92xx_chip_info *compat_info = NULL;
+	const struct yt92xx_series *compat_info = NULL;
 	struct device *dev = &mdiodev->dev;
 	struct yt921x_reg_mdio *mdio;
 	struct yt921x_priv *priv;
 	struct dsa_switch *ds;
+	int ret;
 
 	compat_info = of_device_get_match_data(dev);
 	if (!compat_info)
@@ -5813,10 +7104,21 @@ static int yt92xx_mdio_probe(struct mdio_device *mdiodev)
 	mdio->switchid = 0;
 
 	mutex_init(&priv->reg_lock);
+	INIT_LIST_HEAD(&priv->yt922x_fdb_entries);
+	ret = devm_add_action_or_reset(dev, yt922x_fdb_cleanup, priv);
+	if (ret)
+		return ret;
 
-	priv->chip_info = compat_info;
+	priv->series_info = compat_info;
 	priv->reg_ops = &yt921x_reg_ops_mdio;
 	priv->reg_ctx = mdio;
+
+	for (size_t i = 0; i < ARRAY_SIZE(priv->ports); i++) {
+		struct yt921x_port *pp = &priv->ports[i];
+
+		pp->mib_working = 0;
+		INIT_DELAYED_WORK(&pp->cpu_mac_work, yt922x_cpu_mac_resync);
+	}
 
 	ds = &priv->ds;
 	ds->dev = dev;
@@ -5827,7 +7129,7 @@ static int yt92xx_mdio_probe(struct mdio_device *mdiodev)
 	ds->ageing_time_min = compat_info->ageing_time_min;
 	ds->ageing_time_max = compat_info->ageing_time_max;
 	ds->phylink_mac_ops = compat_info->mac_ops;
-	ds->num_lag_ids = compat_info->lag_id;
+	ds->num_lag_ids = compat_info->num_lag_ids;
 	ds->num_ports = compat_info->ports;
 
 	mdiodev_set_drvdata(mdiodev, priv);
@@ -5835,26 +7137,26 @@ static int yt92xx_mdio_probe(struct mdio_device *mdiodev)
 	return dsa_register_switch(ds);
 }
 
-static const struct of_device_id yt92xx_of_match[] = {
+static const struct of_device_id yt921x_of_match[] = {
 	{
 		.compatible = "motorcomm,yt9215",
-		.data = &yt92xx_chip_info_table[YT9215],
+		.data = &yt92xx_series_table[YT9215],
 	},
 	{
 		.compatible = "motorcomm,yt9224",
-		.data = &yt92xx_chip_info_table[YT9224],
+		.data = &yt92xx_series_table[YT9224],
 	},
 	{}
 };
-MODULE_DEVICE_TABLE(of, yt92xx_of_match);
+MODULE_DEVICE_TABLE(of, yt921x_of_match);
 
 static struct mdio_driver yt92xx_mdio_driver = {
-	.probe = yt92xx_mdio_probe,
-	.remove = yt92xx_mdio_remove,
-	.shutdown = yt92xx_mdio_shutdown,
+	.probe = yt921x_mdio_probe,
+	.remove = yt921x_mdio_remove,
+	.shutdown = yt921x_mdio_shutdown,
 	.mdiodrv.driver = {
-		.name = YT92XX_NAME,
-		.of_match_table = yt92xx_of_match,
+		.name = YT921X_NAME,
+		.of_match_table = yt921x_of_match,
 	},
 };
 

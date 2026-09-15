@@ -7,7 +7,8 @@
  * config the vermagic is derived from - stay exactly as the official build
  * has them. The DSA core only ever looks the tagger up by this number, so
  * any value no in-tree tagger uses will do; 32/33 match what the driver
- * uses on OpenWrt main, where MXL862 already holds 30 and 31.
+ * uses on OpenWrt main, where MXL862 already holds 30 and 31; the four-byte
+ * YT922x tag is 34 there as well.
  */
 
 #ifndef __YT921X_PROTO_H
@@ -21,8 +22,10 @@
 
 #define DSA_TAG_PROTO_YT921X_VALUE	32
 #define DSA_TAG_PROTO_YT922X_VALUE	33
+#define DSA_TAG_PROTO_YT922X_4B_VALUE	34
 
 #define DSA_TAG_PROTO_YT921X		((enum dsa_tag_protocol)DSA_TAG_PROTO_YT921X_VALUE)
 #define DSA_TAG_PROTO_YT922X		((enum dsa_tag_protocol)DSA_TAG_PROTO_YT922X_VALUE)
+#define DSA_TAG_PROTO_YT922X_4B		((enum dsa_tag_protocol)DSA_TAG_PROTO_YT922X_4B_VALUE)
 
 #endif /* __YT921X_PROTO_H */

@@ -111,6 +111,7 @@
 #define   YT921X_PORT_SPEED_1000			YT921X_PORT_SPEED(2)
 #define   YT921X_PORT_SPEED_10000			YT921X_PORT_SPEED(3)
 #define   YT921X_PORT_SPEED_2500			YT921X_PORT_SPEED(4)
+#define   YT921X_PORT_SPEED_5000			YT921X_PORT_SPEED(5)
 #define YT921X_PON_STRAP_FUNC		0x80320
 #define YT921X_PON_STRAP_VAL		0x80324
 #define YT921X_PON_STRAP_CAP		0x80328
@@ -855,92 +856,88 @@ enum yt921x_fdb_entry_status {
 #define YT921X_PORT_NUM			11
 
 /* yt922x register lists */
-#define YT92XX_PAGE_SELECT	0x1e
-#define YT92XX_PAGE		0x1f
-#define YT922X_PORTn_CTRL(port)                (0x80080 + 4 * (port))
-#define YT922X_PORT_CTRL_PAUSE_AN      BIT(10)
-#define YT922X_PORTn_STATUS(port)      (0x80200 + 4 * (port))
-#define YT922X_EN_PHY_OVERWRITE   (0x80040)
-#define YT922X_EN_PHY_VALUE       (0x8003c)
+#define YT92XX_PAGE_SELECT		0x1e
+#define YT92XX_PAGE			0x1f
+#define YT922X_PORTn_STATUS(port)	(0x80200 + 4 * (port))
+#define  YT922X_PORT_STATUS_LINK		BIT(8)
+#define YT922X_EN_PHY_OVERWRITE		(0x80040)
+#define YT922X_EN_PHY_VALUE		(0x8003c)
 /* CTRL: force op to make soft configuration effective */
-#define YT922X_PORT_FORCE_OP           BIT(14)
-#define YT922X_PORT_CFG_TX_EN       BIT(13)
-#define YT922X_PORT_CFG_RX_EN       BIT(12)
-#define YT922X_PORT_FC_AN            BIT(11)
-#define YT922X_PORT_LINK_AN            BIT(10)  /* CTRL: auto negotiation */
-#define YT922X_PORT_LINK               BIT(9)  /* CTRL: link status */
-#define YT922X_PORT_HALF_PAUSE         BIT(8)  /* Half-duplex back pressure mode */
-#define YT922X_PORT_DUPLEX_FULL                BIT(7)
-#define YT922X_PORT_RX_PAUSE           BIT(6)
-#define YT922X_PORT_TX_PAUSE           BIT(5)
-#define YT922X_PORT_RX_MAC_EN          BIT(4)
-#define YT922X_PORT_TX_MAC_EN          BIT(3)
-#define YT922X_PORT_SPEED_M            GENMASK(2, 0)
-#define YT922X_PORT_SDS_MODE           0x400
-#define YT922X_PORT_SDS_MODE_M         GENMASK(6, 4)
-#define YT92XX_SERDES_MODE_SGMII                       0
-#define YT92XX_SERDES_MODE_REVSGMII                    1
-#define YT92XX_SERDES_MODE_1000BASEX                   2
-#define YT92XX_SERDES_MODE_100BASEX                    3
-#define YT92XX_SERDES_MODE_2500BASEX                   4
-#define YT92XX_SERDES_MODE_USXGMII                     6
-#define YT922X_PORT_NUM                                        9
+#define YT922X_PORTn_CTRL(port)		(0x80080 + 4 * (port))
+#define  YT922X_PORT_FORCE_OP			BIT(14)
+#define  YT922X_PORT_CFG_TX_EN			BIT(13)
+#define  YT922X_PORT_CFG_RX_EN			BIT(12)
+#define  YT922X_PORT_FC_AN			BIT(11)
+#define  YT922X_PORT_LINK_AN			BIT(10)  /* CTRL: auto negotiation */
+#define  YT922X_PORT_LINK			BIT(9)  /* CTRL: link status */
+#define  YT922X_PORT_HALF_PAUSE			BIT(8)  /* Half-duplex back pressure mode */
+#define  YT922X_PORT_DUPLEX_FULL		BIT(7)
+#define  YT922X_PORT_RX_PAUSE			BIT(6)
+#define  YT922X_PORT_TX_PAUSE			BIT(5)
+#define  YT922X_PORT_RX_MAC_EN			BIT(4)
+#define  YT922X_PORT_TX_MAC_EN			BIT(3)
+#define  YT922X_PORT_SPEED_M			GENMASK(2, 0)
+#define YT922X_PORT_SDSn		0x400
+#define  YT922X_SERDES_MODE_M			GENMASK(6, 4)
+#define   YT922X_SERDES_MODE(x)				FIELD_PREP(YT922X_SERDES_MODE_M, (x))
+#define YT92XX_SERDES_MODE_SGMII		YT922X_SERDES_MODE(0)
+#define YT92XX_SERDES_MODE_REVSGMII		YT921X_SERDES_MODE(1)
+#define YT92XX_SERDES_MODE_1000BASEX		YT921X_SERDES_MODE(2)
+#define YT92XX_SERDES_MODE_100BASEX		YT921X_SERDES_MODE(3)
+#define YT92XX_SERDES_MODE_2500BASEX		YT921X_SERDES_MODE(4)
+#define YT92XX_SERDES_MODE_USXGMII		YT922X_SERDES_MODE(6)
+#define YT92XX_SERDES_MODE_10GBASER		YT922X_SERDES_MODE(6)
+#define YT922X_PORT_NUM			9
+
 /* LAG */
-#define YT922X_LAG_NUM                                 4
+#define YT922X_LAG_NUM			4
 /* ISO */
-#define YT922X_PORTn_ISOLATION(port)           (0x4 * (port) + 0x180d80)
+#define YT922X_PORTn_ISOLATION(port)	(0x4 * (port) + 0x180d80)
 /* FDB */
-#define YT922X_PORTn_LEARN(port)       (0x180300 + 4 * (port))
-#define YT922X_PORT_LEARN_DIS          BIT(18)
+#define YT922X_PORTn_LEARN(port)	(0x180300 + 4 * (port))
+#define  YT922X_PORT_LEARN_DIS			BIT(18)
 /* GLOBAL CTRL */
 #define  YT922X_FUNC_ACL               BIT(5)
 #define  YT922X_FUNC_MIB               BIT(4)
 /* CTRL PKT */
-#define YT922X_FILTER_UNK_UCAST                        0x180ec8
-#define YT922X_ACT_UNK_UCAST                   0x180ed8
-#define YT922X_ACT_UNK_MCAST                   0x180ee0
-#define YT922X_ACT_UNK_MCAST_BYPASS_DROP_PIM   BIT(22)
-#define YT922X_ACT_UNK_MCAST_BYPASS_DROP_MLD   BIT(21)
-#define YT922X_ACT_UNK_MCAST_BYPASS_DROP_IGMP  BIT(20)
-#define YT922X_ACT_UNK_ACTn_M(port)            GENMASK(2 * (port) + 1, 2 * (port))
-#define YT922X_ACT_UNK_ACTn(port, x)           ((x) << (2 * (port)))
-#define YT922X_ACT_UNK_ACTn_FORWARD(port)      YT922X_ACT_UNK_ACTn(port, 0)  /* flood */
-#define YT922X_ACT_UNK_ACTn_TRAP(port)         YT922X_ACT_UNK_ACTn(port, 3)  /* steer to CPU */
-#define YT922X_ACT_UNK_ACTn_DROP(port)         YT922X_ACT_UNK_ACTn(port, 1)  /* discard */
-/* NEVER use this action; see comments in the tag driver */
-#define YT922X_ACT_UNK_ACTn_COPY(port)         YT922X_ACT_UNK_ACTn(port, 2)  /* flood and copy */
+#define YT922X_FILTER_UNK_UCAST		0x180ec8
+#define YT922X_ACT_UNK_UCAST		0x180ed8
+#define YT922X_ACT_UNK_MCAST		0x180ee0
+#define  YT922X_ACT_UNK_MCAST_BYPASS_DROP_PIM	BIT(22)
+#define  YT922X_ACT_UNK_MCAST_BYPASS_DROP_MLD	BIT(21)
+#define  YT922X_ACT_UNK_MCAST_BYPASS_DROP_IGMP	BIT(20)
+#define  YT922X_ACT_UNK_ACTn_M(port)		GENMASK(2 * (port) + 1, 2 * (port))
+#define  YT922X_ACT_UNK_ACTn(port, x)		((x) << (2 * (port)))
+#define  YT922X_ACT_UNK_ACTn_FORWARD(port)	YT922X_ACT_UNK_ACTn(port, 0)  /* flood */
+#define  YT922X_ACT_UNK_ACTn_DROP(port)		YT922X_ACT_UNK_ACTn(port, 1)  /* discard */
+#define  YT922X_ACT_UNK_ACTn_TRAP(port)		YT922X_ACT_UNK_ACTn(port, 3)  /* steer to CPU */
 
 /* CPU PORT */
 #define YT922X_CPU_COPY			0x181100
-#define YT922X_CPU_COPY_TO_INT_CPU	BIT(1)
-#define YT922X_CPU_COPY_TO_EXT_CPU	BIT(0)
+#define  YT922X_CPU_COPY_TO_INT_CPU		BIT(1)
+#define  YT922X_CPU_COPY_TO_EXT_CPU		BIT(0)
 #define YT922X_CPU_TAG_RX_CTRL		0x80504
-#define YT922X_CPU_TAG_RX_MODE		BIT(0)
+#define  YT922X_CPU_TAG_RX_MODE			BIT(0)
 #define YT922X_CPU_TAG_TX_CTRL		0x100710
-#define YT922X_CPU_TAG_TX_TYPE		BIT(0)
-#define YT922X_CPU_TAG_TX_MODE		BIT(1)
-#define YT922X_CPU_TAG_TX_CTAG_OP	BIT(2)
-#define YT922X_CPU_TAG_TX_STAG_OP	BIT(3)
+#define  YT922X_CPU_TAG_TX_TYPE			BIT(0)
+#define  YT922X_CPU_TAG_TX_MODE			BIT(1)
+#define  YT922X_CPU_TAG_TX_CTAG_OP		BIT(2)
+#define  YT922X_CPU_TAG_TX_STAG_OP		BIT(3)
+
+#define yt922x_port_is_internal_utp(port) ((port) < 8 && (port) > 3)
+#define yt922x_port_is_internal_sds(port) ((port) == 0 || (port) == 8)
 
 enum yt922x_phy_reg_type {
 	YT922X_PHY_REG_TYPE_COMMON_EXT,
-	YT922X_PHY_REG_TYPE_PHY_COMMON_EXT,
 	YT922X_PHY_REG_TYPE_SDS_COMMON_EXT,
 	YT922X_PHY_REG_TYPE_MII,
 	YT922X_PHY_REG_TYPE_EXT,
-	YT922X_PHY_REG_TYPE_MMD1,
-	YT922X_PHY_REG_TYPE_MMD3,
-	YT922X_PHY_REG_TYPE_MMD7,
 	YT922X_PHY_REG_TYPE_MAX
 };
 
 enum yt922x_phy_reg_space {
-	YT922X_PHY_REG_SPACE_PHY,
-	YT922X_PHY_REG_SPACE_PHY_T1,
-	YT922X_PHY_REG_SPACE_PHY_LDS,
 	YT922X_PHY_REG_SPACE_SGMII,
 	YT922X_PHY_REG_SPACE_USXGMII,
-	YT922X_PHY_REG_SPACE_QSGMII,
 	YT922X_PHY_REG_SPACE_MAX
 };
 
@@ -1029,6 +1026,19 @@ struct yt921x_port {
 	struct yt921x_mib mib;
 	u64 rx_frames;
 	u64 tx_frames;
+	bool mib_working;
+	struct yt921x_priv *priv;
+	struct phylink_pcs pcs;
+
+	/* YT9224 fixed CPU link recovery, protected by reg_lock. */
+	struct delayed_work cpu_mac_work;
+	bool fixed_usxgmii_10g;
+	bool conduit_operational;
+
+	/* YT9224 bridge state, protected by reg_lock. */
+	struct net_device *yt922x_bridge;
+	u8 yt922x_stp_state;
+	bool yt922x_learning;
 };
 
 struct yt921x_reg_ops {
@@ -1041,11 +1051,11 @@ enum yt92xx_mode {
 	YT9224,
 };
 
-struct yt92xx_chip_info {
+struct yt92xx_series {
 	enum yt92xx_mode mode;
 	const char *name;
 	unsigned int ports;
-	unsigned int lag_id;
+	unsigned int num_lag_ids;
 	unsigned int ageing_time_min;
 	unsigned int ageing_time_max;
 	const struct dsa_switch_ops *switch_ops;
@@ -1055,7 +1065,7 @@ struct yt92xx_chip_info {
 struct yt921x_priv {
 	struct dsa_switch ds;
 
-	const struct yt92xx_chip_info *chip_info;
+	const struct yt92xx_series *series_info;
 	const struct yt921x_info *info;
 	unsigned int meter_slot_ns;
 	unsigned int port_shape_slot_ns;
@@ -1073,6 +1083,8 @@ struct yt921x_priv {
 	struct mii_bus *mbus_ext;
 
 	struct yt921x_port ports[YT921X_PORT_NUM];
+	bool cpu_mac_stopping;
+	bool yt922x_bridge_broken;
 
 	u16 eee_ports_mask;
 
@@ -1080,6 +1092,9 @@ struct yt921x_priv {
 
 	u8 acl_masks[YT921X_ACL_BLK_NUM];
 	struct yt921x_acl_blk *acl_blks[YT921X_ACL_BLK_NUM];
+
+	/* Static VID 0/1 aliases, protected by reg_lock. */
+	struct list_head yt922x_fdb_entries;
 };
 
 #endif
