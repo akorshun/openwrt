@@ -1,0 +1,67 @@
+From: JiaY-shi <shi05275@163.com>
+Subject: [PATCH] net: phy: realtek: fix RTL8261C firmware probe
+
+rtl8261c_cg_probe() first calls rtl826x_probe(), which selects and requests
+either rtl8261n.bin or rtl8264b.bin based on the vendor version register.
+It only requests rtl8261c.bin after that generic probe succeeds.
+
+Systems shipping only the firmware required by their RTL8261C therefore
+keep deferring the Realtek driver probe and eventually bind the Generic
+Clause 45 PHY driver.  Besides skipping the RTL8261C initialization, that
+driver can report an incorrect negotiated link speed.
+
+Pass the model-specific firmware initializer into the common probe path.
+The RTL8261C then loads only rtl8261c.bin while existing RTL826x users keep
+their current firmware selection.
+
+Ported to the 25.12 (6.12) version of the RTL826x support.
+
+Signed-off-by: JiaY-shi <shi05275@163.com>
+---
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -2204,7 +2204,8 @@ static int rtl826x_patch_db_init(struct phy_device *phydev)
+ 		return rtl8264b_phy_patch_db_init(phydev);
+ }
+ 
+-static int rtl826x_probe(struct phy_device *phydev)
++static int rtl826x_probe_with_patch(struct phy_device *phydev,
++				    int (*patch_db_init)(struct phy_device *))
+ {
+ 	struct device *dev = &phydev->mdio.dev;
+ 	struct rtl826x_priv *priv;
+@@ -2225,7 +2226,7 @@ static int rtl826x_probe(struct phy_device *phydev)
+ 	 */
+ 	phydev->eee_broken_modes |= MDIO_EEE_100TX | MDIO_EEE_1000T;
+ 
+-	ret = rtl826x_patch_db_init(phydev);
++	ret = patch_db_init(phydev);
+ 	if (ret < 0)
+ 		return ret;
+ 
+@@ -2235,6 +2236,11 @@ static int rtl826x_probe(struct phy_device *phydev)
+ 	return 0;
+ }
+ 
++static int rtl826x_probe(struct phy_device *phydev)
++{
++	return rtl826x_probe_with_patch(phydev, rtl826x_patch_db_init);
++}
++
+ /* 6.12 predates phy-common-props (v7.0). These are the two helpers
+  * rtl826x_config_serdes_polarity() needs, carried locally, together with
+  * the PHY_POL_* values from dt-bindings/phy/phy.h.
+@@ -2380,11 +2386,8 @@ static int rtl8261c_cg_probe(struct phy_device *phydev)
+ {
+ 	int ret;
+ 
+-	ret = rtl826x_probe(phydev);
+-	if (ret < 0)
+-		return ret;
+-
+-	ret = rtl8261c_phy_patch_db_init(phydev);
++	ret = rtl826x_probe_with_patch(phydev,
++				       rtl8261c_phy_patch_db_init);
+ 	if (ret < 0)
+ 		return ret;
+ 
