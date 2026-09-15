@@ -105,6 +105,25 @@ jobs:
           done
           ./scripts/feeds install -a
 
+      - name: Fetch the official 25.12.5 eBPF toolchain
+        # bridger compiles a BPF program; toolchain/Config.in uses a prebuilt
+        # LLVM found in ./llvm-bpf instead of building tools/llvm-bpf.
+        if: matrix.name == 'branch'
+        shell: su buildbot -c "sh -e {0}"
+        working-directory: openwrt
+        run: |
+          base=https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic
+          curl -fsSL --retry 3 -o /tmp/sha256sums "$base/sha256sums"
+          f=$(sed -n 's/^[0-9a-f]\{64\} \*\(llvm-bpf-.*\.Linux-x86_64\.tar\.zst\)$/\1/p' /tmp/sha256sums | head -1)
+          [ -n "$f" ] || { echo "::error::no llvm-bpf toolchain listed in the 25.12.5 sha256sums"; exit 1; }
+          curl -fsSL --retry 3 -o "/tmp/$f" "$base/$f"
+          (cd /tmp && grep -F " *$f" sha256sums | sha256sum -c -)
+          ZSTD=$(command -v zstd || echo staging_dir/host/bin/zstd)
+          "$ZSTD" -dc "/tmp/$f" | tar -x
+          rm -f "/tmp/$f"
+          [ -f llvm-bpf/.llvm-version ] || { echo "::error::llvm-bpf/.llvm-version missing after extraction"; exit 1; }
+          llvm-bpf/bin/clang --version | head -1
+
       - name: Configure external toolchain and the board
         shell: su buildbot -c "sh -e {0}"
         working-directory: openwrt
@@ -142,6 +161,8 @@ jobs:
               grep -qx "CONFIG_PACKAGE_$k=m" .config \
                 || { echo "::error::$k is not selected - is package/kernel/dsa-yt921x visible?"; exit 1; }
             done
+            grep -qx 'CONFIG_USE_LLVM_PREBUILT=y' .config \
+              || { echo "::error::the prebuilt eBPF toolchain is not selected"; exit 1; }
           fi
           echo "config OK"
 
@@ -249,6 +270,28 @@ jobs:
           OBJ=$(find build_dir -path '*linux-mediatek_filogic/linux-6.12*/drivers/net/phy/realtek/realtek_main.o' | head -1)
           echo "realtek object: ${OBJ}"
           echo "realtek OK"
+
+      - name: Check the PPE offload patches and build bridger
+        if: matrix.name == 'branch'
+        shell: su buildbot -c "sh -e {0}"
+        working-directory: openwrt
+        run: |
+          KSRC=$(find build_dir -maxdepth 3 -type d -path '*linux-mediatek_filogic/linux-6.12*' | head -1)
+          [ -f "$KSRC/include/linux/dsa/yt922x.h" ] || { echo "::error::<linux/dsa/yt922x.h> missing"; exit 1; }
+          grep -q 'DSA_TAG_PROTO_YT922X_4B' "$KSRC/drivers/net/ethernet/mediatek/mtk_ppe_offload.c" \
+            || { echo "::error::mtk_ppe_offload.c does not know the YT922x four-byte tag"; exit 1; }
+          grep -qF 'mtk_flow_get_dsa_port(&idev, NULL)' "$KSRC/drivers/net/ethernet/mediatek/mtk_ppe_offload.c" \
+            || { echo "::error::mtk_ppe_offload.c does not pick the conduit PPE on ingress"; exit 1; }
+          grep -q 'DSA_TAG_PROTO_YT922X_4B' "$KSRC/drivers/net/ethernet/mediatek/mtk_ppe.c" \
+            || { echo "::error::mtk_ppe.c does not match bridge flows behind the YT922x tag"; exit 1; }
+          for o in drivers/net/ethernet/mediatek/mtk_ppe_offload.o drivers/net/ethernet/mediatek/mtk_ppe.o net/bridge/br_fdb.o; do
+            [ -f "$KSRC/$o" ] || { echo "::error::$o was not built"; exit 1; }
+          done
+          echo "PPE offload patches compiled"
+          make package/bridger/compile -j$(nproc) BUILD_LOG=1 || ret=$? .github/workflows/scripts/show_build_failures.sh
+          find build_dir -path '*/bridger-*' -name 'bridger-bpf.o' | grep -q . \
+            || { echo "::error::bridger-bpf.o was not built"; exit 1; }
+          echo "bridger OK"
 
       - name: Upload build logs on failure
         if: failure()

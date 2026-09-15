@@ -3,8 +3,9 @@ name: Build GL.iNet GL-BE14000 (Flint 4) 25.12.5
 # this branch: OpenWrt 25.12.5 plus the board support ported from John
 # Crispin's (blogic) GL-BE14000 series and JiaY-shi's completion of it
 # (blogic/openwrt#4) - the board itself, the RTL8261C/D-CG 10G PHY driver
-# ported to 6.12, and the Motorcomm YT9224 switch and YT8824 PHY drivers
-# built out of tree.
+# ported to 6.12, the Motorcomm YT9224 switch and YT8824 PHY drivers
+# built out of tree, and WED/PPE hardware offload (code-only kernel
+# patches, bridger built with the official 25.12.5 eBPF toolchain).
 #
 # The kernel config is seeded from the official 25.12.5 config.buildinfo and
 # nothing on this branch adds a CONFIG_ symbol, so the computed vermagic must
@@ -92,6 +93,16 @@ jobs:
           chk target/linux/mediatek/patches-6.12/743-net-phy-realtek-add-support-for-rtl8261c.patch
           chk target/linux/mediatek/patches-6.12/744-net-phy-realtek-fix-RTL8261C-firmware-probe.patch
           chk target/linux/mediatek/patches-6.12/738-net-pcs-mtk_usxgmii-support-fixed-10G-switch-trunks.patch
+          chk target/linux/mediatek/patches-6.12/745-net-ethernet-mtk_ppe_offload-set-output-device-before-VLAN-PPPoE-push.patch
+          chk target/linux/mediatek/patches-6.12/746-net-ethernet-mtk_ppe-offload-flows-to-YT922x-four-byte-port-tags.patch
+          chk target/linux/mediatek/patches-6.12/747-net-mediatek-ppe-match-bridge-flows-behind-the-YT922x-CPU-tag.patch
+          chk target/linux/mediatek/patches-6.12/748-net-mediatek-ppe-retire-only-the-expired-bridge-subflow.patch
+          chk target/linux/mediatek/patches-6.12/749-net-bridge-notify-switchdev-before-a-static-FDB-move.patch
+          chk target/linux/mediatek/filogic/base-files/etc/hotplug.d/net/30-wifi-flow-offload
+          grep -q 'MODPARAMS.mt7996e:=wed_enable=1' package/kernel/mt76/Makefile \
+            || { echo "::error::mt7996e does not enable WED"; fail=1; }
+          sed -n '/^define Device\/glinet_gl-be14000$/,/^endef$/p' target/linux/mediatek/image/filogic.mk \
+            | grep -q bridger || { echo "::error::bridger is not in the GL-BE14000 profile"; fail=1; }
           chk package/kernel/dsa-yt921x/src/yt921x.c
           chk package/kernel/dsa-yt921x/src/tag_yt922x.c
           chk package/kernel/dsa-yt921x/src/yt8824.c
@@ -133,6 +144,25 @@ jobs:
           done
           ./scripts/feeds install -a
 
+      - name: Fetch the official 25.12.5 eBPF toolchain
+        # bridger compiles a BPF program. Without a prebuilt LLVM the tree
+        # builds tools/llvm-bpf first, about 90 minutes on a hosted runner;
+        # the 25.12.5 release publishes the toolchain its buildbot used, and
+        # toolchain/Config.in picks it up from ./llvm-bpf. It only compiles
+        # BPF objects, nothing that reaches the kernel or its config.
+        run: |
+          base=https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic
+          curl -fsSL --retry 3 -o /tmp/sha256sums "$base/sha256sums"
+          f=$(sed -n 's/^[0-9a-f]\{64\} \*\(llvm-bpf-.*\.Linux-x86_64\.tar\.zst\)$/\1/p' /tmp/sha256sums | head -1)
+          [ -n "$f" ] || { echo "::error::no llvm-bpf toolchain listed in the 25.12.5 sha256sums"; exit 1; }
+          curl -fsSL --retry 3 -o "/tmp/$f" "$base/$f"
+          (cd /tmp && grep -F " *$f" sha256sums | sha256sum -c -)
+          tar -I zstd -xf "/tmp/$f"
+          rm -f "/tmp/$f"
+          [ -f llvm-bpf/.llvm-version ] || { echo "::error::llvm-bpf/.llvm-version missing after extraction"; exit 1; }
+          echo "llvm-bpf $(cat llvm-bpf/.llvm-version)"
+          llvm-bpf/bin/clang --version | head -1
+
       - name: Configure build (official 25.12.5 config, GL-BE14000 only)
         run: |
           cp .github/workflows/config/glinet-gl-be14000.config .config
@@ -151,6 +181,10 @@ jobs:
             || { echo "::error::CONFIG_PACKAGE_luci did not survive defconfig - is the luci feed installed?"; fail=1; }
           grep -qx 'CONFIG_PACKAGE_kmod-dsa-yt921x=m' .config \
             || { echo "::error::kmod-dsa-yt921x is not selected"; fail=1; }
+          grep -qE '^CONFIG_PACKAGE_bridger=[ym]$' .config \
+            || { echo "::error::bridger is not selected"; fail=1; }
+          grep -qx 'CONFIG_USE_LLVM_PREBUILT=y' .config \
+            || { echo "::error::the prebuilt eBPF toolchain is not used - tools/llvm-bpf would be built"; fail=1; }
 
           # include/kernel-defaults.mk copies every CONFIG_KERNEL_* symbol into
           # the kernel config, so each one is part of the ABI the official
@@ -210,6 +244,14 @@ jobs:
           fi
           echo "vermagic OK"
 
+      - name: Build bridger
+        # The only package that needs the eBPF toolchain: fail in minutes
+        # rather than at the end of the full build.
+        run: |
+          make package/bridger/compile -j$(nproc) || make package/bridger/compile -j1 V=s
+          find build_dir -path '*/bridger-*' -name 'bridger-bpf.o' | grep -q . \
+            || { echo "::error::bridger-bpf.o was not built"; exit 1; }
+
       - name: Build firmware
         run: make -j$(nproc) ${{ inputs.verbose == 'true' && 'V=s' || '' }}
 
@@ -228,6 +270,26 @@ jobs:
             for s in 'motorcomm,yt9224' 'yt922x_4b' '10gbase-r' 'mediatek,force-fixed-10g'; do
               strings "$KDTB" | grep -qx "$s" \
                 || { echo "::error::DTB has no '$s' string"; fail=1; }
+            done
+          fi
+          # The PPE offload for the YT9224 is code in the built-in Ethernet
+          # driver; make sure the patched sources are what got compiled.
+          KSRC=$(find build_dir -maxdepth 3 -type d -path '*linux-mediatek_filogic/linux-6.12*' | head -1)
+          if [ -z "$KSRC" ]; then
+            echo "::error::kernel build directory not found"
+            fail=1
+          else
+            [ -f "$KSRC/include/linux/dsa/yt922x.h" ] \
+              || { echo "::error::<linux/dsa/yt922x.h> is not in the kernel tree"; fail=1; }
+            grep -q 'DSA_TAG_PROTO_YT922X_4B' "$KSRC/drivers/net/ethernet/mediatek/mtk_ppe_offload.c" \
+              || { echo "::error::mtk_ppe_offload.c does not know the YT922x four-byte tag"; fail=1; }
+            grep -qF 'mtk_flow_get_dsa_port(&idev, NULL)' "$KSRC/drivers/net/ethernet/mediatek/mtk_ppe_offload.c" \
+              || { echo "::error::mtk_ppe_offload.c does not pick the conduit PPE on ingress"; fail=1; }
+            grep -q 'DSA_TAG_PROTO_YT922X_4B' "$KSRC/drivers/net/ethernet/mediatek/mtk_ppe.c" \
+              || { echo "::error::mtk_ppe.c does not match bridge flows behind the YT922x tag"; fail=1; }
+            for o in drivers/net/ethernet/mediatek/mtk_ppe_offload.o drivers/net/ethernet/mediatek/mtk_ppe.o; do
+              [ "$KSRC/$o" -nt "$KSRC/${o%.o}.c" ] \
+                || { echo "::error::$o is missing or older than its source"; fail=1; }
             done
           fi
           # The manifest OpenWrt writes (include/image.mk, Image/Manifest) is
@@ -257,6 +319,16 @@ jobs:
               || { echo "::error::rtl8261c.bin is not in the device rootfs"; fail=1; }
             [ -f "$RD/lib/firmware/mediatek/mt7996/mt7996_wm_233.bin" ] \
               || { echo "::error::MT7996 2/3/3 Wi-Fi firmware is not in the device rootfs"; fail=1; }
+            # Hardware offload: WED for the MT7996, bridger for bridged
+            # flows, and the hook that puts Wi-Fi into the flowtable.
+            [ -f "$RD/lib/firmware/mediatek/mt7988/mt7988_wo_0.bin" ] \
+              || { echo "::error::MT7988 WED offload (WO) firmware is not in the device rootfs"; fail=1; }
+            grep -qx 'mt7996e wed_enable=1' "$RD/etc/modules.d/mt7996e" 2>/dev/null \
+              || { echo "::error::/etc/modules.d/mt7996e does not enable WED: $(cat "$RD/etc/modules.d/mt7996e" 2>/dev/null)"; fail=1; }
+            [ -x "$RD/usr/sbin/bridger" ] && [ -f "$RD/lib/bpf/bridger-bpf.o" ] \
+              || { echo "::error::bridger is not in the device rootfs"; fail=1; }
+            [ -f "$RD/etc/hotplug.d/net/30-wifi-flow-offload" ] \
+              || { echo "::error::the Wi-Fi flowtable hotplug handler is not in the device rootfs"; fail=1; }
             DEVMAN="${TARGET_DIR}/openwrt-25.12.5-mediatek-filogic-${DEVICE}.manifest"
             IPKG_INSTROOT="$RD" staging_dir/host/bin/apk --root "$RD" \
               --keys-dir "$(pwd)" --no-logfile --preserve-env \
@@ -266,7 +338,8 @@ jobs:
               echo "device manifest: $(wc -l < "$DEVMAN") packages"
               # Only a warning: apk is being run against an offline root here,
               # and the file checks above already decided the build.
-              for p in kmod-dsa-yt921x kmod-phy-yt8824 rtl8261c-firmware kmod-mt7996-233-firmware luci; do
+              for p in kmod-dsa-yt921x kmod-phy-yt8824 rtl8261c-firmware kmod-mt7996-233-firmware \
+                       mt7988-wo-firmware bridger luci; do
                 grep -q "^$p " "$DEVMAN" \
                   || echo "::warning::$p is not listed in the generated device manifest"
               done
@@ -359,36 +432,59 @@ jobs:
             | Port | Hardware | Status |
             |---|---|---|
             | `wan` | 10GbE RJ45, Realtek RTL8261D | works; RTL8261C/D probe fixed, see below |
-            | `lan1`-`lan4` | 2.5GbE, Motorcomm YT9224 + YT8824 | **works** (new in this release) |
+            | `lan1`-`lan4` | 2.5GbE, Motorcomm YT9224 + YT8824 | works |
             | `lan5`-`lan8` | 1GbE, MT7988 built-in switch | works |
             | `sfp` | 10G SFP+ on the YT9224, 10GBASE-R | not confirmed on hardware yet |
 
+            ### Hardware offload
+
+            OpenWrt ships with flow offloading off. Turn it on in LuCI under
+            **Network > Firewall > General Settings > Routing/NAT Offloading >
+            Hardware flow offloading**, or with
+            `uci set firewall.@defaults[0].flow_offloading=1; uci set firewall.@defaults[0].flow_offloading_hw=1; uci commit firewall; fw4 reload`.
+
+            | Path | Offloaded by | Status |
+            |---|---|---|
+            | Wi-Fi <-> `wan` | WED (MT7988 + MT7996) | verified: about 1 Gbit/s both ways on 5 GHz, bypassing the CPU |
+            | `lan5`-`lan8` <-> `wan` | PPE, MediaTek switch tag | stock 25.12 driver support, not tested on this board |
+            | `lan1`-`lan4`, `sfp` <-> `wan` | PPE, YT9224 four-byte tag | new, not yet verified on hardware |
+            | bridged Wi-Fi <-> LAN ports | `bridger` + PPE/WED | new, not yet verified on hardware |
+
             ### Changes since the previous release
 
-            * **`lan1`-`lan4` work.** JiaY-shi's complete YT9224 driver and the YT8824
-              quad 2.5G PHY driver, both built out of tree as `kmod-dsa-yt921x` and
-              `kmod-phy-yt8824`, with the PHY package at switch MDIO addresses 4-7 and a
-              fixed 10G USXGMII trunk to the switch. Lan ports on the YT9224 are
-              bridged in the switch itself.
-            * **10G WAN probe fixed.** The RTL8261C/D driver first asked for another
-              RTL826x model's firmware, which the image does not carry, so it deferred
-              forever and the Generic Clause 45 driver took the port - without the
-              RTL8261C init and with a possibly wrong link speed. It now loads only
-              `rtl8261c.bin`.
-            * **Stable LAN MAC.** The link to the YT9224 picked a random MAC on every
-              boot, and `lan1`-`lan4`, `sfp` and `br-lan` with it. It now uses the LAN
-              address from the factory partition like `lan5`-`lan8`.
-            * **2 GiB RAM** described in the device tree, matching production units.
+            * **WED enabled for the MT7996** (`mt7996e wed_enable=1`), with the MT7988
+              WO firmware in the image. Both PCIe functions of the Wi-Fi card attach
+              to WED v3.
+            * **Wi-Fi interfaces join the flow offload table.** fw4 builds that table
+              when the firewall loads, which at boot is before the Wi-Fi interfaces
+              exist, and a restarted radio comes back as a new interface. A hotplug
+              handler now reloads the firewall once they are in the bridge.
+            * **PPE offload behind the YT9224.** The Ethernet driver pushes the
+              switch's four-byte port tag on offloaded flows and picks the right PPE
+              on ingress, ported from JiaY-shi's 6.18 series together with the
+              bridge-flow lookup and a subflow expiry fix. Without it, flows from
+              `lan1`-`lan4` were reported as `[HW_OFFLOAD]` in conntrack but never
+              bound in hardware.
+            * **`bridger`** in the image, for hardware offload of bridged flows.
+            * Static bridge FDB moves now notify the switch of the old port.
+            * All of this is code in the built-in drivers plus packages: still no
+              kernel config change, so the official kmods keep working.
 
             ### Known issues - read before flashing
 
             * **Pre-production samples with 1 GiB RAM: do not flash.** The device tree
-              now declares the 2 GiB of retail units.
-            * **Not in this 25.12.5 build**, unlike the snapshot build of this board:
-              MediaTek PPE hardware offload for traffic behind the YT9224, WED for the
-              MT7996, and 802.1Q VLAN and multicast offload on the switch. They need
-              changes to the built-in DSA core and Ethernet driver that the official
-              kmods were not built against. VLANs and multicast still work, in software.
+              declares the 2 GiB of retail units.
+            * **6 GHz needs a country that allows it.** With the default country `00`
+              the 6 GHz radio stays disabled, and with `US` it reports 0 dBm: the
+              regulatory database marks the whole band no-IR there, so the AP never
+              starts. Use one country for all radios that permits 6 GHz without no-IR
+              (e.g. `DE`, or `RU` with channels 1-93), WPA3 (`sae` or `sae-mixed`).
+            * **802.1Q VLAN and multicast offload on the switch** are not ported: they
+              need new callbacks in the built-in DSA core that the official kmods were
+              not built against. VLANs and multicast work in software, and flows of a
+              VLAN-filtering bridge on the YT9224 stay on the software path.
+            * If `kmod-mt7996e` is ever reinstalled from the official feed, WED is off
+              again; add `options mt7996e wed_enable=Y` to `/etc/modules.conf`.
             * The front LCD is not driven: the panel and touch stack needs the
               `display` target feature and DRM kernel modules that the official
               25.12.5 filogic kernel does not have, and enabling them would break
@@ -419,6 +515,8 @@ jobs:
             * RTL8261D-CG 10G PHY driver with its `rtl8261c.bin` patch firmware,
               MT7996 Wi-Fi firmware, the YT9224 switch and YT8824 PHY drivers,
               USB 3, PWM fan, SFP support.
+            * MT7988 WED offload firmware and `bridger`; flow offloading itself stays
+              off until enabled in the firewall, as on any OpenWrt image.
 
             ### Files
 
