@@ -159,4 +159,15 @@ static struct dsa_tag_driver DSA_TAG_DRIVER_NAME(__ops) = {		\
 	.ops = &__ops,							\
 }
 
+/* Single-tagger registration, used by tag_yt921x.c since the YT922x
+ * taggers moved into their own module.
+ */
+#define module_dsa_tag_driver(__ops)					\
+DSA_TAG_DRIVER(__ops);							\
+									\
+static struct dsa_tag_driver *dsa_tag_driver_array[] =	{		\
+	&DSA_TAG_DRIVER_NAME(__ops)					\
+};									\
+module_dsa_tag_drivers(dsa_tag_driver_array)
+
 #endif

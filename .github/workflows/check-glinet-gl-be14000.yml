@@ -222,7 +222,9 @@ jobs:
         shell: su buildbot -c "sh -e {0}"
         working-directory: openwrt
         run: |
-          make package/kernel/dsa-yt921x/compile -j$(nproc) BUILD_LOG=1 V=sc || ret=$? .github/workflows/scripts/show_build_failures.sh
+          # -k: keep compiling the other objects after one fails, so a single
+          # run reports every error in the out-of-tree sources.
+          make -k package/kernel/dsa-yt921x/compile -j$(nproc) BUILD_LOG=1 V=sc || ret=$? .github/workflows/scripts/show_build_failures.sh
           make package/firmware/rtl8261c-firmware/compile -j$(nproc) BUILD_LOG=1 || ret=$? .github/workflows/scripts/show_build_failures.sh
           find build_dir -path '*/dsa-yt921x/*' -name '*.ko' -exec ls -l {} \;
           for m in yt921x tag_yt921x tag_yt922x yt8824; do
