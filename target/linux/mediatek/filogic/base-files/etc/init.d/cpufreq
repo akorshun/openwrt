@@ -1,0 +1,20 @@
+#!/bin/sh /etc/rc.common
+
+START=15
+
+boot() {
+	local policy
+
+	case "$(board_name)" in
+	glinet,gl-be14000)
+		# The filogic kernel defaults to the userspace governor, which
+		# keeps the CPU at whatever speed the bootloader set. The stock
+		# GL.iNet bootloader leaves the Cortex-A73 cores at 1.5 GHz,
+		# below their 1.8 GHz maximum.
+		for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+			[ "$(cat "$policy/scaling_governor" 2>/dev/null)" = userspace ] || continue
+			echo performance > "$policy/scaling_governor"
+		done
+		;;
+	esac
+}
