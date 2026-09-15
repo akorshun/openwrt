@@ -138,8 +138,10 @@ jobs:
             || { echo "::error::${{ matrix.device }} is not selected after defconfig"; exit 1; }
           grep -qx 'CONFIG_ALL_KMODS=y' .config || { echo "::error::CONFIG_ALL_KMODS lost"; exit 1; }
           if [ "${{ matrix.name }}" = branch ]; then
-            grep -qx 'CONFIG_PACKAGE_kmod-dsa-yt921x=m' .config \
-              || { echo "::error::kmod-dsa-yt921x is not selected - is package/kernel/dsa-yt921x visible?"; exit 1; }
+            for k in kmod-dsa-yt921x kmod-phy-yt8824; do
+              grep -qx "CONFIG_PACKAGE_$k=m" .config \
+                || { echo "::error::$k is not selected - is package/kernel/dsa-yt921x visible?"; exit 1; }
+            done
           fi
           echo "config OK"
 
@@ -210,7 +212,9 @@ jobs:
           make target/linux/dtb -j$(nproc) BUILD_LOG=1 || ret=$? .github/workflows/scripts/show_build_failures.sh
           KDTB=$(find build_dir -name 'image-mt7988a-glinet-gl-be14000.dtb' 2>/dev/null | head -1)
           [ -n "$KDTB" ] || { echo "::error::image-mt7988a-glinet-gl-be14000.dtb was not produced"; exit 1; }
-          strings "$KDTB" | grep -qx 'motorcomm,yt9224' || { echo "::error::DTB has no motorcomm,yt9224 node"; exit 1; }
+          for s in 'motorcomm,yt9224' 'yt922x_4b' '10gbase-r' 'mediatek,force-fixed-10g'; do
+            strings "$KDTB" | grep -qx "$s" || { echo "::error::DTB has no '$s' string"; exit 1; }
+          done
           echo "DTB OK: $KDTB"
 
       - name: Build the out-of-tree kmods and firmware
@@ -221,7 +225,7 @@ jobs:
           make package/kernel/dsa-yt921x/compile -j$(nproc) BUILD_LOG=1 V=sc || ret=$? .github/workflows/scripts/show_build_failures.sh
           make package/firmware/rtl8261c-firmware/compile -j$(nproc) BUILD_LOG=1 || ret=$? .github/workflows/scripts/show_build_failures.sh
           find build_dir -path '*/dsa-yt921x/*' -name '*.ko' -exec ls -l {} \;
-          for m in yt921x tag_yt921x; do
+          for m in yt921x tag_yt921x tag_yt922x yt8824; do
             f=$(find build_dir -path '*/dsa-yt921x/*' -name "$m.ko" | head -1)
             [ -n "$f" ] || { echo "::error::$m.ko was not built"; exit 1; }
             staging_dir/toolchain-*/bin/*-readelf -p .modinfo "$f" 2>/dev/null | grep -E 'vermagic|alias' || true
@@ -235,6 +239,11 @@ jobs:
           SRC=$(find build_dir -path '*linux-mediatek_filogic/linux-6.12*/drivers/net/phy/realtek/realtek_main.c' | head -1)
           [ -n "$SRC" ] || { echo "::error::patched realtek_main.c not found"; exit 1; }
           grep -q 'RTL8261C/D-CG 10Gbps PHY' "$SRC" || { echo "::error::RTL8261C/D-CG entry missing from realtek_main.c"; exit 1; }
+          grep -q 'rtl826x_probe_with_patch(phydev,' "$SRC" \
+            || { echo "::error::RTL8261C probe still requests another model's firmware first"; exit 1; }
+          PCS=$(find build_dir -path '*linux-mediatek_filogic/linux-6.12*/drivers/net/pcs/pcs-mtk-usxgmii.c' | head -1)
+          grep -q 'mediatek,force-fixed-10g' "$PCS" \
+            || { echo "::error::USXGMII PCS does not handle mediatek,force-fixed-10g"; exit 1; }
           OBJ=$(find build_dir -path '*linux-mediatek_filogic/linux-6.12*/drivers/net/phy/realtek/realtek_main.o' | head -1)
           echo "realtek object: ${OBJ}"
           echo "realtek OK"
