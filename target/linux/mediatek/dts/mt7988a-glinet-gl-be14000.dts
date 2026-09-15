@@ -222,6 +222,8 @@
 &gmac1 {
 	phy-mode = "usxgmii";
 	phy-connection-type = "usxgmii";
+	nvmem-cells = <&macaddr_ethernet 2>;
+	nvmem-cell-names = "mac-address";
 	status = "okay";
 
 	fixed-link {
