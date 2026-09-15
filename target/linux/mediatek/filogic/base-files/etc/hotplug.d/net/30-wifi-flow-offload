@@ -1,0 +1,40 @@
+#!/bin/sh
+# fw4 builds the flow offload table from the devices that are members of
+# the zones' bridges when the firewall is loaded. The Wi-Fi interfaces
+# join br-lan later, and a restarted radio comes back as a new netdev the
+# table no longer hooks, so WED cannot offload their flows until something
+# reloads the firewall. Reload it once they are in the bridge.
+
+[ "$ACTION" = add ] || exit 0
+[ -e "/sys/class/net/$DEVICENAME/phy80211" ] || exit 0
+
+case "$(board_name)" in
+glinet,gl-be14000)
+	;;
+*)
+	exit 0
+	;;
+esac
+
+[ "$(uci -q get firewall.@defaults[0].flow_offloading)" = 1 ] || exit 0
+/etc/init.d/firewall enabled || exit 0
+
+(
+	# netifd adds the interface to its bridge once hostapd has set it up
+	i=0
+	while [ ! -e "/sys/class/net/$DEVICENAME/master" ] && [ "$i" -lt 30 ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+
+	# The interfaces of all radios arrive within seconds of each other;
+	# only the last one to join reloads.
+	stamp=/var/run/wifi-flow-offload
+	token="$DEVICENAME $$ $(date +%s)"
+	echo "$token" > "$stamp"
+	sleep 5
+	[ "$(cat "$stamp" 2>/dev/null)" = "$token" ] || exit 0
+
+	logger -t firewall "Reloading firewall to add $DEVICENAME to the flow offload table"
+	fw4 -q reload
+) </dev/null >/dev/null 2>&1 &
