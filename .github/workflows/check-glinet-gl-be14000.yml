@@ -293,6 +293,16 @@ jobs:
             || { echo "::error::bridger-bpf.o was not built"; exit 1; }
           echo "bridger OK"
 
+      - name: Upload the built bridger package
+        # Lets a fix be tried on the device before a full release build.
+        if: matrix.name == 'branch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridger-package
+          path: openwrt/bin/packages/*/base/bridger-*.apk
+          retention-days: 7
+          if-no-files-found: warn
+
       - name: Upload build logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
