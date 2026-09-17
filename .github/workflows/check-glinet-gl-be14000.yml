@@ -297,6 +297,9 @@ jobs:
           make package/kernel/a73-ssb/compile -j$(nproc) BUILD_LOG=1 || ret=$? .github/workflows/scripts/show_build_failures.sh
           find build_dir -name 'a73_ssb.ko' | grep -q . \
             || { echo "::error::a73_ssb.ko was not built"; exit 1; }
+          # Keep the bare module next to the package: it can be copied to
+          # the device and loaded without touching its package database.
+          cp "$(find build_dir -name a73_ssb.ko | head -1)" a73_ssb.ko
           echo "a73-ssb OK"
 
       - name: Upload the built bridger package
@@ -308,6 +311,7 @@ jobs:
           path: |
             openwrt/bin/packages/*/base/bridger-*.apk
             openwrt/bin/targets/*/*/packages/kmod-a73-ssb*.apk
+            openwrt/a73_ssb.ko
           retention-days: 7
           if-no-files-found: warn
 
