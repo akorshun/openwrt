@@ -453,7 +453,7 @@ jobs:
             | Wi-Fi <-> `wan` | WED (MT7988 + MT7996) | verified: about 1 Gbit/s both ways on 5 GHz, bypassing the CPU |
             | `lan5`-`lan8` <-> `wan` | PPE, MediaTek switch tag | stock 25.12 driver support, not tested on this board |
             | `lan1`-`lan4`, `sfp` <-> `wan` | PPE, YT9224 four-byte tag | new, not yet verified on hardware |
-            | bridged Wi-Fi <-> LAN ports | `bridger` + PPE/WED | new, not yet verified on hardware |
+            | bridged Wi-Fi <-> LAN ports | `bridger` + PPE/WED | verified: both directions in hardware |
 
             ### Changes since the previous release
 
@@ -470,7 +470,15 @@ jobs:
               bridge-flow lookup and a subflow expiry fix. Without it, flows from
               `lan1`-`lan4` were reported as `[HW_OFFLOAD]` in conntrack but never
               bound in hardware.
-            * **`bridger`** in the image, for hardware offload of bridged flows.
+            * **`bridger`** in the image, for hardware offload of bridged flows, updated
+              to the version OpenWrt main carries (its older vlan check dropped every
+              flow on a bridge with vlan filtering disabled) and patched to report
+              netlink errors to its caller. Without that patch a refused offload looks
+              like a success, so it stopped at the YT9224 user port - which only
+              offloads ACL rules - instead of falling back to the conduit, where the
+              PPE takes the rule. Measured on the device afterwards: a LAN to Wi-Fi
+              transfer runs entirely in hardware, both netdev counters stay at zero
+              and the CPU is 96% idle.
             * **CPU at full speed.** The filogic kernel defaults to the `userspace`
               cpufreq governor, which kept the CPU at the 1.5 GHz the GL.iNet
               bootloader leaves it at. `/etc/init.d/cpufreq` now switches to
