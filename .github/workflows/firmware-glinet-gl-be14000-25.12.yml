@@ -476,9 +476,12 @@ jobs:
               netlink errors to its caller. Without that patch a refused offload looks
               like a success, so it stopped at the YT9224 user port - which only
               offloads ACL rules - instead of falling back to the conduit, where the
-              PPE takes the rule. Measured on the device afterwards: a LAN to Wi-Fi
-              transfer runs entirely in hardware, both netdev counters stay at zero
-              and the CPU is 96% idle.
+              PPE takes the rule, and to offload on the conduit first instead of
+              asking the switch port that cannot do it. Measured on the device: an
+              iperf3 transfer from a wired PC to a 5 GHz client runs entirely in
+              hardware for both directions - lan1, the Wi-Fi netdev and its rx
+              counter all stay at zero while the radio moves ~1.75 Gbit/s - and the
+              CPU sits at 98% idle.
             * **CPU at full speed.** The filogic kernel defaults to the `userspace`
               cpufreq governor, which kept the CPU at the 1.5 GHz the GL.iNet
               bootloader leaves it at. `/etc/init.d/cpufreq` now switches to
