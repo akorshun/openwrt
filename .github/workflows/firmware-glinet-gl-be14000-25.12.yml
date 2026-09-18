@@ -470,18 +470,18 @@ jobs:
               bridge-flow lookup and a subflow expiry fix. Without it, flows from
               `lan1`-`lan4` were reported as `[HW_OFFLOAD]` in conntrack but never
               bound in hardware.
-            * **`bridger`** in the image, for hardware offload of bridged flows, updated
-              to the version OpenWrt main carries (its older vlan check dropped every
-              flow on a bridge with vlan filtering disabled) and patched to report
-              netlink errors to its caller. Without that patch a refused offload looks
-              like a success, so it stopped at the YT9224 user port - which only
-              offloads ACL rules - instead of falling back to the conduit, where the
-              PPE takes the rule, and to offload on the conduit first instead of
-              asking the switch port that cannot do it. Measured on the device: an
-              iperf3 transfer from a wired PC to a 5 GHz client runs entirely in
-              hardware for both directions - lan1, the Wi-Fi netdev and its rx
-              counter all stay at zero while the radio moves ~1.75 Gbit/s - and the
-              CPU sits at 98% idle.
+            * **`bridger`** in the image, for hardware offload of bridged flows, at
+              upstream HEAD (2026-09-18). That version carries the two fixes this
+              board needed, written here and accepted upstream (nbd168/bridger#15):
+              netlink errors now reach the caller, so a refused offload is no longer
+              taken for a success, and flows are offloaded on the conduit first rather
+              than on the YT9224 user port, which only offloads ACL rules. It also
+              brings the vlan check fix for bridges with vlan filtering disabled and
+              some 25 further upstream fixes. Measured on the device: an iperf3
+              transfer from a wired PC to a 5 GHz client runs entirely in hardware
+              for both directions - lan1, the Wi-Fi netdev and its rx counter all stay
+              at zero while the radio moves ~1.75 Gbit/s - and the CPU sits at 98%
+              idle; the same holds for lan5 over a 100 s run.
             * **CPU at full speed.** The filogic kernel defaults to the `userspace`
               cpufreq governor, which kept the CPU at the 1.5 GHz the GL.iNet
               bootloader leaves it at. `/etc/init.d/cpufreq` now switches to
