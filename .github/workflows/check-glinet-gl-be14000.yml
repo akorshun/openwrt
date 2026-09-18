@@ -292,15 +292,6 @@ jobs:
           find build_dir -path '*/bridger-*' -name 'bridger-bpf.o' | grep -q . \
             || { echo "::error::bridger-bpf.o was not built"; exit 1; }
           echo "bridger OK"
-          # Diagnostic module, not part of any image; built so it can be
-          # loaded by hand on the device.
-          make package/kernel/a73-ssb/compile -j$(nproc) BUILD_LOG=1 || ret=$? .github/workflows/scripts/show_build_failures.sh
-          find build_dir -name 'a73_ssb.ko' | grep -q . \
-            || { echo "::error::a73_ssb.ko was not built"; exit 1; }
-          # Keep the bare module next to the package: it can be copied to
-          # the device and loaded without touching its package database.
-          cp "$(find build_dir -name a73_ssb.ko | head -1)" a73_ssb.ko
-          echo "a73-ssb OK"
 
       - name: Upload the built bridger package
         # Lets a fix be tried on the device before a full release build.
@@ -308,10 +299,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bridger-package
-          path: |
-            openwrt/bin/packages/*/base/bridger-*.apk
-            openwrt/bin/targets/*/*/packages/kmod-a73-ssb*.apk
-            openwrt/a73_ssb.ko
+          path: openwrt/bin/packages/*/base/bridger-*.apk
           retention-days: 7
           if-no-files-found: warn
 
