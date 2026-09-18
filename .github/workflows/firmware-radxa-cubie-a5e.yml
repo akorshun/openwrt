@@ -16,21 +16,23 @@ name: Build Radxa Cubie A5E
 #   - "nanya":     current tree, DRAM timings tuned for Nanya 4GB modules
 #   - "classic":   reverts 27dca26 (the Nanya tuning commit), for older
 #                  board revisions that need the original timings
-#   - "samsung":   TPR11/TPR12 read back on a first 2GB Samsung-RAM board
-#   - "s7f53":     TPR11/TPR12 read back on board S/N *7f53
+#   - "samsung":   TPR11/TPR12 read back on a 2GB Samsung-RAM board
+#   - "s7f53":     TPR11/TPR12 read back on a 4GB Micron-RAM board, S/N *7f53
 #   - "s7f53-r2":  same board *7f53, re-read after a reboot 2 minutes
 #                  later - DRAM training doesn't always land on the same
 #                  values twice, hence the separate variant
 #   - "s7f53-12h": same board *7f53, re-read again 12 hours later
-#   - "s317f":     TPR11/TPR12 read back on board S/N *317f
-#   - "sc1ee":     TPR11/TPR12 read back on board S/N *c1ee
-# All the Samsung readings share TPR6/TPR10 (0x3a000000/0x882f3333, same as
-# the Nanya-tuned values) and differ only in TPR11/TPR12; each variant's
-# patch lives in .github/workflows/patches/ (see matrix.dram_patch_file
-# below) rather than in package/boot/uboot-a523/patches/, since that
-# directory is shared by every U-Boot build the uboot-a523 package
-# produces and committing a variant's timings there would make them the
-# default for every other variant too.
+#   - "s317f":     TPR11/TPR12 read back on a 4GB Micron-RAM board, S/N *317f
+#   - "sc1ee":     TPR11/TPR12 read back on a 4GB Micron-RAM board, S/N *c1ee
+#   - "m6":        TPR11/TPR12 read back on a sixth 4GB Micron-RAM board
+#                  (no S/N given)
+# TPR6/TPR10 are identical across every variant (0x3a000000/0x882f3333, same
+# as the Nanya-tuned values) - only TPR11/TPR12 differ. Each variant's patch
+# lives in .github/workflows/patches/ (see matrix.dram_patch_file below)
+# rather than in package/boot/uboot-a523/patches/, since that directory is
+# shared by every U-Boot build the uboot-a523 package produces and
+# committing a variant's timings there would make them the default for
+# every other variant too.
 #
 # The build config is seeded from the official buildbot config for this
 # release (.github/workflows/config/radxa-cubie-a5e.config) so that the
@@ -102,25 +104,29 @@ jobs:
             revert_dram_patch: false
             dram_patch_file: samsung-2gb-dram-timings.patch
           - suffix: s7f53
-            label: "RAM Samsung 2GB (S/N *7f53)"
+            label: "RAM Micron 4GB (S/N *7f53)"
             revert_dram_patch: false
-            dram_patch_file: samsung-2gb-dram-timings-s7f53.patch
+            dram_patch_file: micron-4gb-dram-timings-s7f53.patch
           - suffix: s7f53-r2
-            label: "RAM Samsung 2GB (S/N *7f53, +2min reboot)"
+            label: "RAM Micron 4GB (S/N *7f53, +2min reboot)"
             revert_dram_patch: false
-            dram_patch_file: samsung-2gb-dram-timings-s7f53-r2.patch
+            dram_patch_file: micron-4gb-dram-timings-s7f53-r2.patch
           - suffix: s7f53-12h
-            label: "RAM Samsung 2GB (S/N *7f53, +12h)"
+            label: "RAM Micron 4GB (S/N *7f53, +12h)"
             revert_dram_patch: false
-            dram_patch_file: samsung-2gb-dram-timings-s7f53-12h.patch
+            dram_patch_file: micron-4gb-dram-timings-s7f53-12h.patch
           - suffix: s317f
-            label: "RAM Samsung 2GB (S/N *317f)"
+            label: "RAM Micron 4GB (S/N *317f)"
             revert_dram_patch: false
-            dram_patch_file: samsung-2gb-dram-timings-s317f.patch
+            dram_patch_file: micron-4gb-dram-timings-s317f.patch
           - suffix: sc1ee
-            label: "RAM Samsung 2GB (S/N *c1ee)"
+            label: "RAM Micron 4GB (S/N *c1ee)"
             revert_dram_patch: false
-            dram_patch_file: samsung-2gb-dram-timings-sc1ee.patch
+            dram_patch_file: micron-4gb-dram-timings-sc1ee.patch
+          - suffix: m6
+            label: "RAM Micron 4GB (board #6)"
+            revert_dram_patch: false
+            dram_patch_file: micron-4gb-dram-timings-m6.patch
 
     steps:
       - name: Maximize build space
