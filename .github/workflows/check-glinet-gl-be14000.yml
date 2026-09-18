@@ -291,6 +291,9 @@ jobs:
           make package/bridger/compile -j$(nproc) BUILD_LOG=1 || ret=$? .github/workflows/scripts/show_build_failures.sh
           find build_dir -path '*/bridger-*' -name 'bridger-bpf.o' | grep -q . \
             || { echo "::error::bridger-bpf.o was not built"; exit 1; }
+          # Print the hash of the source tarball the tree just made, the
+          # value PKG_MIRROR_HASH needs after a bump of PKG_SOURCE_VERSION.
+          sha256sum dl/bridger-* 2>/dev/null || true
           echo "bridger OK"
 
       - name: Upload the built bridger package
