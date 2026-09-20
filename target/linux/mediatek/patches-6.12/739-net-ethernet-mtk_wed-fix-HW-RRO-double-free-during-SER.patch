@@ -1,0 +1,27 @@
+From: JiaY-shi <shi05275@163.com>
+Subject: [PATCH] net: ethernet: mtk_wed: fix HW RRO double free during SER
+
+mtk_wed_free_rx_buffer() already releases the HW RRO buffer through
+mtk_wed_hwrro_free_buffer().  Do not release it a second time from the
+SER RX reset path, otherwise a Wi-Fi recovery can pass a stale page
+pointer to __free_pages() and panic the kernel.
+
+mtk_wed_hwrro_free_buffer() leaves dev->hw_rro.pages and .desc pointing
+at the memory it just freed, so the second call walks a freed page list,
+unmaps and frees each page again and hands the same coherent allocation
+back twice.
+
+Signed-off-by: JiaY-shi <shi05275@163.com>
+[backport to 6.12, same code as 6.18]
+Signed-off-by: Andrey Korshunov <razor1702@gmail.com>
+---
+--- a/drivers/net/ethernet/mediatek/mtk_wed.c
++++ b/drivers/net/ethernet/mediatek/mtk_wed.c
+@@ -1746,7 +1746,6 @@ mtk_wed_rx_reset(struct mtk_wed_device *
+ 				   false);
+ 	}
+ 	mtk_wed_free_rx_buffer(dev);
+-	mtk_wed_hwrro_free_buffer(dev);
+ 
+ 	return 0;
+ }
