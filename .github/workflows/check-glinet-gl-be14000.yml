@@ -296,6 +296,21 @@ jobs:
           sha256sum dl/bridger-* 2>/dev/null || true
           echo "bridger OK"
 
+      - name: Build the WAN-on-LAN8 port layout package
+        if: matrix.name == 'branch'
+        shell: su buildbot -c "sh -e {0}"
+        working-directory: openwrt
+        run: |
+          make package/gl-be14000-wan-lan8/compile -j$(nproc) BUILD_LOG=1 || ret=$? .github/workflows/scripts/show_build_failures.sh
+          F=$(find build_dir -path '*gl-be14000-wan-lan8*/etc/board.d/03_network-wan-lan8' | head -1)
+          [ -n "$F" ] || { echo "::error::the package does not install /etc/board.d/03_network-wan-lan8"; exit 1; }
+          APK=$(find bin/packages -name 'gl-be14000-wan-lan8-*.apk' | head -1)
+          [ -n "$APK" ] || { echo "::error::no gl-be14000-wan-lan8 package was produced"; exit 1; }
+          echo "package: $APK"
+          sh -n "$F" || { echo "::error::$F is not valid shell"; exit 1; }
+          grep -q 'ucidef_set_interfaces_lan_wan .* "lan8"' "$F" || { echo "::error::$F does not put the uplink on lan8"; exit 1; }
+          echo "gl-be14000-wan-lan8 OK"
+
       - name: Upload the built bridger package
         # Lets a fix be tried on the device before a full release build.
         if: matrix.name == 'branch'

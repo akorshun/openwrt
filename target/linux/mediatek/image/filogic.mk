@@ -1612,6 +1612,16 @@ define Device/glinet_gl-be14000
 endef
 TARGET_DEVICES += glinet_gl-be14000
 
+# Same image with the uplink on lan8, for connections the 1G port can carry:
+# the 10G RJ45 then stays in the LAN bridge. Only the defaults differ.
+define Device/glinet_gl-be14000-wan-lan8
+  $(Device/glinet_gl-be14000)
+  DEVICE_VARIANT := WAN on LAN8
+  SUPPORTED_DEVICES := glinet,gl-be14000
+  DEVICE_PACKAGES += gl-be14000-wan-lan8
+endef
+TARGET_DEVICES += glinet_gl-be14000-wan-lan8
+
 define Device/glinet_gl-mt2500
   DEVICE_VENDOR := GL.iNet
   DEVICE_MODEL := GL-MT2500

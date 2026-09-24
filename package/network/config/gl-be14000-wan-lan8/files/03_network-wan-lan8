@@ -1,0 +1,14 @@
+# Runs after 02_network, which put every port into the LAN bridge and made
+# the 10G RJ45 the uplink. /bin/board_detect sources the scripts in order,
+# so re-declaring the interfaces here replaces that layout.
+
+. /lib/functions.sh
+. /lib/functions/uci-defaults.sh
+
+[ "$(board_name)" = "glinet,gl-be14000" ] || exit 0
+
+board_config_update
+ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 lan5 lan6 lan7 sfp wan" "lan8"
+board_config_flush
+
+exit 0

@@ -46,6 +46,7 @@ concurrency:
 
 env:
   DEVICE: glinet_gl-be14000
+  DEVICE_ALT: glinet_gl-be14000-wan-lan8
   TARGET_DIR: bin/targets/mediatek/filogic
   # Published in targets/mediatek/filogic/kmods/ for 25.12.5. The build must
   # arrive at this value on its own; see the vermagic step below.
@@ -117,6 +118,15 @@ jobs:
             || { echo "::error::filogic.mk has no Device/glinet_gl-be14000"; fail=1; }
           grep -q 'glinet,gl-be14000' target/linux/mediatek/filogic/base-files/etc/board.d/02_network \
             || { echo "::error::02_network has no glinet,gl-be14000 entry"; fail=1; }
+          # The second image differs only in the default port layout: uplink on
+          # lan8, 10G RJ45 in the LAN bridge.
+          chk package/network/config/gl-be14000-wan-lan8/Makefile
+          chk package/network/config/gl-be14000-wan-lan8/files/03_network-wan-lan8
+          grep -q '^define Device/glinet_gl-be14000-wan-lan8$' target/linux/mediatek/image/filogic.mk \
+            || { echo "::error::filogic.mk has no Device/glinet_gl-be14000-wan-lan8"; fail=1; }
+          sed -n '/^define Device\/glinet_gl-be14000-wan-lan8$/,/^endef$/p' target/linux/mediatek/image/filogic.mk \
+            | grep -q 'SUPPORTED_DEVICES := glinet,gl-be14000$' \
+            || { echo "::error::the variant does not declare SUPPORTED_DEVICES glinet,gl-be14000"; fail=1; }
           # This branch must not touch the kernel config: that is what keeps
           # the vermagic equal to the official one. The checkout is shallow
           # and the fork carries no v25.12.5 tag, so fetch the release commit
@@ -179,6 +189,10 @@ jobs:
           fail=0
           grep -qE "^CONFIG_TARGET(_DEVICE)?_mediatek_filogic_DEVICE_${DEVICE}=y" .config \
             || { echo "::error::${DEVICE} is not selected after defconfig"; fail=1; }
+          grep -qE "^CONFIG_TARGET(_DEVICE)?_mediatek_filogic_DEVICE_${DEVICE_ALT}=y" .config \
+            || { echo "::error::${DEVICE_ALT} is not selected after defconfig"; fail=1; }
+          grep -qE '^CONFIG_PACKAGE_gl-be14000-wan-lan8=[ym]$' .config \
+            || { echo "::error::gl-be14000-wan-lan8 is not selected"; fail=1; }
           grep -qx 'CONFIG_ALL_KMODS=y' .config || { echo "::error::CONFIG_ALL_KMODS lost"; fail=1; }
           grep -qx 'CONFIG_PACKAGE_luci=y' .config \
             || { echo "::error::CONFIG_PACKAGE_luci did not survive defconfig - is the luci feed installed?"; fail=1; }
@@ -304,6 +318,8 @@ jobs:
           RD=""
           for d in $(find build_dir -maxdepth 4 -type d -name 'target-dir-*' 2>/dev/null); do
             [ -d "$d/lib/modules" ] || continue
+            # Two profiles, two rootfs: check and describe the stock one.
+            [ -e "$d/etc/board.d/03_network-wan-lan8" ] && continue
             RD="$d"
             break
           done
@@ -356,6 +372,17 @@ jobs:
               rm -f "$DEVMAN"
             fi
           fi
+          # CONFIG_TARGET_PER_DEVICE_ROOTFS gives the two profiles their own
+          # rootfs. Exactly one of them carries the alternate port layout.
+          ALT=$(find build_dir -maxdepth 5 -type f -path "*target-dir-*/etc/board.d/03_network-wan-lan8" 2>/dev/null | wc -l)
+          STOCK=0
+          for d in $(find build_dir -maxdepth 4 -type d -name "target-dir-*" 2>/dev/null); do
+            [ -d "$d/lib/modules" ] || continue
+            [ -e "$d/etc/board.d/03_network-wan-lan8" ] || STOCK=$((STOCK+1))
+          done
+          echo "rootfs with the WAN-on-LAN8 layout: $ALT, with the stock layout: $STOCK"
+          [ "$ALT" = 1 ] || { echo "::error::expected exactly one rootfs with 03_network-wan-lan8, found $ALT"; fail=1; }
+          [ "$STOCK" -ge 1 ] || { echo "::error::no rootfs kept the stock port layout"; fail=1; }
           [ "$fail" = 0 ] || exit 1
           echo "switch driver, DTB and device rootfs OK"
 
@@ -407,6 +434,10 @@ jobs:
             || { echo "::error::no sysupgrade image was produced"; exit 1; }
           ls artifacts/ | grep -q "${DEVICE}-squashfs-factory.bin" \
             || { echo "::error::no factory image was produced"; exit 1; }
+          ls artifacts/ | grep -q "${DEVICE_ALT}-squashfs-sysupgrade.bin" \
+            || { echo "::error::no sysupgrade image for the WAN-on-LAN8 variant"; exit 1; }
+          ls artifacts/ | grep -q "${DEVICE_ALT}-squashfs-factory.bin" \
+            || { echo "::error::no factory image for the WAN-on-LAN8 variant"; exit 1; }
 
       - name: Upload firmware artifacts
         if: success()
@@ -443,6 +474,26 @@ jobs:
             | `lan5`-`lan8` | 1GbE, MT7988 built-in switch | works |
             | `sfp` | 10G SFP+ on the YT9224, 10GBASE-R | not confirmed on hardware yet |
 
+            ### Two images: pick the port layout
+
+            | Image | Uplink | LAN bridge |
+            |---|---|---|
+            | `*-glinet_gl-be14000-squashfs-*` | `wan`, the 10G RJ45 | `lan1`-`lan8` + `sfp` |
+            | `*-glinet_gl-be14000-wan-lan8-squashfs-*` | `lan8`, 1GbE | `lan1`-`lan7` + `sfp` + the 10G RJ45 |
+
+            **If your internet connection is 1 Gbit/s or slower, the `wan-lan8` image
+            is the one to take.** The uplink fits the 1G `lan8` port and the 10G RJ45
+            stays in the LAN bridge, where a PC or a NAS can use it - with hardware
+            offload it carries LAN-to-LAN traffic without the CPU. The 10G port is
+            still the netdev named `wan` there (that name comes from the device tree);
+            it is simply a member of `br-lan`.
+
+            Nothing else differs - same kernel, same packages - and both images carry
+            `glinet,gl-be14000` in the sysupgrade metadata, so either flashes over the
+            other. This is only the default layout, applied on a clean install: a
+            sysupgrade that keeps settings keeps the network config you already have,
+            and either layout can be set up by hand under LuCI > Network > Interfaces.
+
             ### Hardware offload
 
             OpenWrt ships with flow offloading off. Turn it on in LuCI under
@@ -459,6 +510,21 @@ jobs:
 
             ### Changes since the previous release
 
+            * **A second image with the uplink on `lan8`**, for connections a 1G port
+              carries - see the table above.
+            * **The 10G port keeps its name.** `openwrt,netdev-name` was applied by a
+              one-shot userspace pass during preinit, and this GMAC finishes probing
+              only after the RTL8261C PHY is up, some 0.6 s later, so it could miss that
+              pass, stay `eth2` and fall out of the bridge. The driver now takes the
+              name from the device tree before it registers the netdev.
+            * **SFP cage completed**: `kmod-i2c-gpio` is in the image, so the bit-banged
+              bus the module EEPROM is read over exists at all, and the cage rate-select
+              lines are driven by the SFP core instead of the module default.
+            * **AP MLD ACS deadlock fixed** (hostapd). With `channel=auto` on two links
+              of one MLD - 5 GHz and 6 GHz here - each link deferred to the other and
+              after the retry window one of them was disabled.
+            * **No double free during a Wi-Fi firmware recovery (SER).** The WED hardware
+              RRO buffer was released twice, which can panic the kernel mid-recovery.
             * **WED enabled for the MT7996** (`mt7996e wed_enable=1`), with the MT7988
               WO firmware in the image. Both PCIe functions of the Wi-Fi card attach
               to WED v3.
@@ -532,8 +598,9 @@ jobs:
 
             ### What is in the image
 
-            * Stock defaults for the board (`lan1`-`lan8` + `sfp` in the LAN bridge,
-              `wan` = the 10G RJ45 port as DHCP client), Wi-Fi off until configured.
+            * Stock defaults for the board - the LAN bridge and the DHCP-client uplink
+              of the image you flash, per the table above - and Wi-Fi off until
+              configured.
             * **LuCI** (with `luci-ssl`, attended sysupgrade and the package
               manager, as on the official 25.12.5 images) - http://192.168.1.1.
             * RTL8261D-CG 10G PHY driver with its `rtl8261c.bin` patch firmware,
