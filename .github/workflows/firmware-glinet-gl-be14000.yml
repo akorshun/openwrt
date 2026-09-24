@@ -99,6 +99,10 @@ jobs:
           chk target/linux/mediatek/patches-6.18/967-27-net-dsa-yt92xx-Add-support-for-Motorcomm-YT922x.patch
           chk target/linux/mediatek/patches-6.18/967-36-net-phy-Add-driver-for-Motorcomm-Quad-2.5GbE-phy.patch
           chk target/linux/mediatek/patches-6.18/967-38-mtk-usxgmii-support-fixed-10g-links.patch
+          chk target/linux/mediatek/patches-6.18/999-net-mtk_eth_soc-honour-openwrt-netdev-name.patch
+          grep -q 'rate-select0-gpios' target/linux/mediatek/dts/mt7988a-glinet-gl-be14000.dts || { echo "::error::the DTS does not wire the SFP rate-select lines"; fail=1; }
+          grep -q 'kmod-i2c-gpio' target/linux/mediatek/image/filogic.mk || { echo "::error::kmod-i2c-gpio is not in the image profiles"; fail=1; }
+          chk package/network/services/hostapd/patches/361-mld-acs-partner-tiebreak.patch
           grep -q '^define Device/glinet_gl-be14000$' target/linux/mediatek/image/filogic.mk \
             || { echo "::error::filogic.mk has no Device/glinet_gl-be14000"; fail=1; }
           grep -q 'glinet,gl-be14000' target/linux/mediatek/filogic/base-files/etc/board.d/02_network \
@@ -260,6 +264,26 @@ jobs:
 
             ### Changes since the previous snapshot
 
+            * **The 10G port keeps its name.** `openwrt,netdev-name` was applied by a
+              one-shot userspace pass during preinit, and this GMAC finishes probing
+              only after the RTL8261C PHY is up, some 0.6 s later, so it could miss that
+              pass, stay `eth2` and fall out of the bridge. The driver now takes the
+              name from the device tree before it registers the netdev.
+            * **SFP cage completed**: `kmod-i2c-gpio` is in the image, so the bit-banged
+              bus the module EEPROM is read over exists at all, and the cage rate-select
+              lines are driven by the SFP core instead of the module default.
+            * **AP MLD ACS deadlock fixed** (hostapd). With `channel=auto` on two links
+              of one MLD - 5 GHz and 6 GHz here - each link deferred to the other and
+              after the retry window one of them was disabled.
+            * **No double free during a Wi-Fi firmware recovery (SER).** The WED hardware
+              RRO buffer was released twice, which can panic the kernel mid-recovery.
+            * Kernel housekeeping from the same branch: the Motorcomm YT92xx DSA symbols
+              are marked unset in the generic 6.18 config (they only apply to filogic,
+              and other mediatek subtargets stopped at an interactive kconfig prompt),
+              `kmod-phy-motorcomm` now depends on `kmod-phy-package`, and the 6.18
+              patches were refreshed.
+
+            Earlier in this series:
             * **`lan1`-`lan4` work.** The YT8824 quad 2.5G PHY sits at switch MDIO
               addresses 4-7 as a PHY package; the old device tree pointed at 0-3,
               where nothing answers with a known ID. Together with the complete
