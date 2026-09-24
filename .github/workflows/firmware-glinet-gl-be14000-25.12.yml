@@ -620,9 +620,9 @@ jobs:
             * `kmods-${{ env.EXPECTED_KERNEL }}-${{ env.EXPECTED_VERMAGIC }}.tar.gz` -
               every kernel module package this build produced, plus the apk index.
             * `*-glinet_gl-be14000.manifest` - every package in the image, with
-              versions. (`openwrt-25.12.5-mediatek-filogic.manifest` is the one
-              OpenWrt writes itself: the shared rootfs, before this board's own
-              packages are added.)
+              versions; the `wan-lan8` image is that list plus `gl-be14000-wan-lan8`.
+              (`openwrt-25.12.5-mediatek-filogic.manifest` is the one OpenWrt writes
+              itself: the shared rootfs, before this board's own packages are added.)
             * `sha256sums`, `profiles.json`, `build.config` - checksums, the image
               metadata and the exact `.config` used.
 
