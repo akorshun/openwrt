@@ -92,6 +92,7 @@ jobs:
           chk target/linux/mediatek/patches-6.12/742-net-phy-realtek-add-5G-and-10G-PHY-support.patch
           chk target/linux/mediatek/patches-6.12/743-net-phy-realtek-add-support-for-rtl8261c.patch
           chk target/linux/mediatek/patches-6.12/744-net-phy-realtek-fix-RTL8261C-firmware-probe.patch
+          chk target/linux/mediatek/patches-6.12/735-net-ethernet-mtk_eth_soc-honour-openwrt-netdev-name.patch
           chk target/linux/mediatek/patches-6.12/738-net-pcs-mtk_usxgmii-support-fixed-10G-switch-trunks.patch
           chk target/linux/mediatek/patches-6.12/739-net-ethernet-mtk_wed-fix-HW-RRO-double-free-during-SER.patch
           chk target/linux/mediatek/patches-6.12/745-net-ethernet-mtk_ppe_offload-set-output-device-before-VLAN-PPPoE-push.patch
