@@ -22,11 +22,11 @@ define Package/gl-be14000-wan-lan8
 endef
 
 define Package/gl-be14000-wan-lan8/description
- Ships an /etc/board.d/ script that overrides the GL-BE14000 default network
- layout: the uplink is lan8 and the 10G RJ45 port stays in the LAN bridge,
- for installations whose internet connection is not faster than the 1G lan8
- port. Only the defaults change; the ports can be reassigned in LuCI either
- way.
+ Marks the image as one whose default GL-BE14000 network layout puts the
+ uplink on lan8 and keeps the 10G RJ45 port in the LAN bridge, for
+ installations whose internet connection is not faster than the 1G lan8
+ port. /etc/board.d/02_network reads the marker. Only the defaults change;
+ the ports can be reassigned in LuCI either way.
 endef
 
 define Build/Prepare
@@ -40,8 +40,8 @@ define Build/Compile
 endef
 
 define Package/gl-be14000-wan-lan8/install
-	$(INSTALL_DIR) $(1)/etc/board.d
-	$(INSTALL_BIN) ./files/03_network-wan-lan8 $(1)/etc/board.d/03_network-wan-lan8
+	$(INSTALL_DIR) $(1)/etc
+	$(INSTALL_DATA) ./files/port-layout $(1)/etc/gl-be14000-port-layout
 endef
 
 $(eval $(call BuildPackage,gl-be14000-wan-lan8))

@@ -121,7 +121,12 @@ jobs:
           # The second image differs only in the default port layout: uplink on
           # lan8, 10G RJ45 in the LAN bridge.
           chk package/network/config/gl-be14000-wan-lan8/Makefile
-          chk package/network/config/gl-be14000-wan-lan8/files/03_network-wan-lan8
+          chk package/network/config/gl-be14000-wan-lan8/files/port-layout
+          B=target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+          grep -q /etc/gl-be14000-port-layout "$B" \
+            || { echo "::error::$B does not read the port layout marker"; fail=1; }
+          grep -q 'lan7 sfp wan" lan8' "$B" \
+            || { echo "::error::$B has no wan-on-lan8 layout"; fail=1; }
           grep -q '^define Device/glinet_gl-be14000-wan-lan8$' target/linux/mediatek/image/filogic.mk \
             || { echo "::error::filogic.mk has no Device/glinet_gl-be14000-wan-lan8"; fail=1; }
           sed -n '/^define Device\/glinet_gl-be14000-wan-lan8$/,/^endef$/p' target/linux/mediatek/image/filogic.mk \
@@ -319,7 +324,7 @@ jobs:
           for d in $(find build_dir -maxdepth 4 -type d -name 'target-dir-*' 2>/dev/null); do
             [ -d "$d/lib/modules" ] || continue
             # Two profiles, two rootfs: check and describe the stock one.
-            [ -e "$d/etc/board.d/03_network-wan-lan8" ] && continue
+            [ -e "$d/etc/gl-be14000-port-layout" ] && continue
             RD="$d"
             break
           done
@@ -378,7 +383,7 @@ jobs:
           STOCK=0
           for d in $(find build_dir -maxdepth 4 -type d -name "target-dir-*" 2>/dev/null); do
             [ -d "$d/lib/modules" ] || continue
-            if [ -e "$d/etc/board.d/03_network-wan-lan8" ]; then
+            if [ -e "$d/etc/gl-be14000-port-layout" ]; then
               ALT=$((ALT+1))
             else
               STOCK=$((STOCK+1))
@@ -388,8 +393,8 @@ jobs:
           [ "$STOCK" -ge 1 ] || { echo "::error::no rootfs kept the stock port layout"; fail=1; }
           # What the build can always prove: the package installs the script.
           # The per-device rootfs may or may not still be around by now.
-          find build_dir -maxdepth 7 -path '*gl-be14000-wan-lan8*/etc/board.d/03_network-wan-lan8' | grep -q . \
-            || { echo "::error::gl-be14000-wan-lan8 does not install /etc/board.d/03_network-wan-lan8"; fail=1; }
+          find build_dir -maxdepth 7 -path '*gl-be14000-wan-lan8*/etc/gl-be14000-port-layout' | grep -q . \
+            || { echo "::error::gl-be14000-wan-lan8 does not install /etc/gl-be14000-port-layout"; fail=1; }
           [ "$ALT" = 1 ] || echo "::warning::expected one per-device rootfs with the WAN-on-LAN8 layout, found $ALT"
           [ "$fail" = 0 ] || exit 1
           echo "switch driver, DTB and device rootfs OK"
@@ -518,6 +523,13 @@ jobs:
 
             ### Changes since the previous release
 
+            * **Fix: the `wan-lan8` image now really swaps the ports.** The layout came
+              from a second `board.d` script, but `ucidef_set_interfaces_lan_wan`
+              appends to the port arrays instead of replacing them, so `board.json`
+              ended up carrying both layouts: `lan8` stayed in `br-lan` and LuCI
+              listed every port twice. The layout is now picked inside `02_network`
+              from a marker file the package ships, so the ports are declared once.
+              Reported on the forum against r9.
             * **A second image with the uplink on `lan8`**, for connections a 1G port
               carries - see the table above.
             * **The 10G port keeps its name.** `openwrt,netdev-name` was applied by a
@@ -642,6 +654,12 @@ jobs:
             from the GL.iNet U-Boot web recovery (hold reset while powering on, then
             open http://192.168.1.1) or with `mtkupgrade fw` from the U-Boot serial
             console. Afterwards use the sysupgrade image for updates.
+
+            The GL.iNet admin panel is not one of those paths - it validates vendor
+            metadata that an OpenWrt factory image does not carry, and refuses the
+            file. From the stock firmware you can instead ssh in and run
+            `sysupgrade -n` with the **sysupgrade** image, which installs it with
+            default settings, the same end state as a factory flash.
 
       - name: Upload build logs on failure
         if: failure()

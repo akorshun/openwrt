@@ -86,7 +86,20 @@ mediatek_setup_interfaces()
 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "eth1 wwan"
 		;;
 	glinet,gl-be14000)
-		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 lan5 lan6 lan7 lan8 sfp" wan
+		# The gl-be14000-wan-lan8 package marks images whose uplink is the
+		# 1G lan8 port, for connections that fit it: the 10G RJ45 then
+		# stays in the LAN bridge. The ports have to be declared once -
+		# ucidef_set_interfaces_lan_wan appends to the port arrays, so a
+		# second call from a later board.d script would leave both
+		# layouts in board.json.
+		case "$(cat /etc/gl-be14000-port-layout 2>/dev/null)" in
+		wan-lan8)
+			ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 lan5 lan6 lan7 sfp wan" lan8
+			;;
+		*)
+			ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 lan5 lan6 lan7 lan8 sfp" wan
+			;;
+		esac
 		;;
 	asiarf,ap7986-003|\
 	asus,tuf-ax4200q|\
