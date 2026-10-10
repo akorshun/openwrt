@@ -132,6 +132,9 @@ jobs:
           sed -n '/^define Device\/glinet_gl-be14000-wan-lan8$/,/^endef$/p' target/linux/mediatek/image/filogic.mk \
             | grep -q 'SUPPORTED_DEVICES := glinet,gl-be14000$' \
             || { echo "::error::the variant does not declare SUPPORTED_DEVICES glinet,gl-be14000"; fail=1; }
+          sed -n '/^define Device\/glinet_gl-be14000-wan-lan8$/,/^endef$/p' target/linux/mediatek/image/filogic.mk \
+            | grep -q 'BOARD_NAME := glinet_gl-be14000$' \
+            || { echo "::error::the variant does not declare BOARD_NAME glinet_gl-be14000"; fail=1; }
           # This branch must not touch the kernel config: that is what keeps
           # the vermagic equal to the official one. The checkout is shallow
           # and the fork carries no v25.12.5 tag, so fetch the release commit
@@ -451,6 +454,15 @@ jobs:
             || { echo "::error::no sysupgrade image for the WAN-on-LAN8 variant"; exit 1; }
           ls artifacts/ | grep -q "${DEVICE_ALT}-squashfs-factory.bin" \
             || { echo "::error::no factory image for the WAN-on-LAN8 variant"; exit 1; }
+          # A running OpenWrt looks for sysupgrade-glinet_gl-be14000/ in the tar
+          # (nand_do_platform_check, board_name with commas replaced), so the
+          # variant image must not name the directory after its own profile.
+          for i in artifacts/*-squashfs-sysupgrade.bin; do
+            d=$(tar tf "$i" 2>/dev/null | head -1 | cut -d/ -f1)
+            echo "$(basename "$i"): $d"
+            [ "$d" = sysupgrade-glinet_gl-be14000 ] \
+              || { echo "::error::$i carries $d, not sysupgrade-glinet_gl-be14000"; exit 1; }
+          done
 
       - name: Upload firmware artifacts
         if: success()
@@ -523,6 +535,13 @@ jobs:
 
             ### Changes since the previous release
 
+            * **Fix: a running OpenWrt now accepts the `wan-lan8` sysupgrade image.**
+              `sysupgrade` and the LuCI flash tool look for a `sysupgrade-<board>/`
+              directory inside the tar, named after the board rather than the image
+              profile, so the variant was rejected with "invalid sysupgrade file" and
+              could only be installed with `sysupgrade -F` or from U-Boot. It now
+              names the directory after the base device, like the stock-layout image.
+              Reported on the forum against r9/r10.
             * **Fix: the `wan-lan8` image now really swaps the ports.** The layout came
               from a second `board.d` script, but `ucidef_set_interfaces_lan_wan`
               appends to the port arrays instead of replacing them, so `board.json`

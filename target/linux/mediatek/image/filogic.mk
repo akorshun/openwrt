@@ -1618,6 +1618,11 @@ define Device/glinet_gl-be14000-wan-lan8
   $(Device/glinet_gl-be14000)
   DEVICE_VARIANT := WAN on LAN8
   SUPPORTED_DEVICES := glinet,gl-be14000
+  # Both of these have to name the base device, or a running OpenWrt
+  # refuses the image: sysupgrade metadata is matched against board_name,
+  # and nand_do_platform_check() looks for sysupgrade-glinet_gl-be14000/
+  # inside the tar, which is named after BOARD_NAME.
+  BOARD_NAME := glinet_gl-be14000
   DEVICE_PACKAGES += gl-be14000-wan-lan8
 endef
 TARGET_DEVICES += glinet_gl-be14000-wan-lan8
