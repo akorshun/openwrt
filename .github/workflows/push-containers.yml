@@ -10,6 +10,7 @@ on:
       - 'toolchain/**'
     branches-ignore:
       - master
+      - main-friendlyarm-nanopi-r28s
 
 permissions:
   contents: read
