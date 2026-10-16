@@ -1,0 +1,47 @@
+--- a/arch/arm64/boot/dts/rockchip/rk3528-nanopi.dtsi
++++ b/arch/arm64/boot/dts/rockchip/rk3528-nanopi.dtsi
+@@ -37,12 +37,11 @@
+ 		pinctrl-names = "default";
+ 		pinctrl-0 = <&led_sys_pin>, <&led1_pin>;
+ 
+-		led-0 {
++		sys_led: led-0 {
+ 			color = <LED_COLOR_ID_RED>;
+-			default-state = "on";
++			default-state = "off";
+ 			function = LED_FUNCTION_HEARTBEAT;
+ 			gpios = <&gpio4 RK_PB0 GPIO_ACTIVE_HIGH>;
+-			linux,default-trigger = "heartbeat";
+ 		};
+ 
+ 		/* The purpose of the second LED differs per board. */
+--- a/arch/arm64/boot/dts/rockchip/rk3528-nanopi-r28s.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3528-nanopi-r28s.dts
+@@ -16,6 +16,11 @@
+ 	aliases {
+ 		mmc2 = &sdio0;
+ 		serial2 = &uart2;
++
++		led-boot = &sys_led;
++		led-failsafe = &sys_led;
++		led-running = &sys_led;
++		led-upgrade = &sys_led;
+ 	};
+ 
+ 	gpio-keys {
+@@ -48,7 +53,6 @@
+ &led1 {
+ 	default-state = "off";
+ 	function = LED_FUNCTION_WAN;
+-	linux,default-trigger = "netdev";
+ };
+ 
+ &leds {
+@@ -60,7 +64,6 @@
+ 		default-state = "off";
+ 		function = LED_FUNCTION_LAN;
+ 		gpios = <&gpio4 RK_PB3 GPIO_ACTIVE_HIGH>;
+-		linux,default-trigger = "netdev";
+ 	};
+ };
+ 

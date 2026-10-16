@@ -1,0 +1,20 @@
+From: Andrey Korshunov <razor1702@gmail.com>
+Subject: [PATCH] arm64: dts: rockchip: set reset button for NanoPi R28S
+
+The board has a single user button. Report it as KEY_RESTART so
+gpio-button-hotplug treats it as the reset button, the way every other
+OpenWrt router with one button behaves.
+
+Signed-off-by: Andrey Korshunov <razor1702@gmail.com>
+
+--- a/arch/arm64/boot/dts/rockchip/rk3528-nanopi-r28s.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3528-nanopi-r28s.dts
+@@ -32,7 +32,7 @@
+ 			debounce-interval = <50>;
+ 			gpios = <&gpio4 RK_PB2 GPIO_ACTIVE_LOW>;
+ 			label = "USER";
+-			linux,code = <BTN_1>;
++			linux,code = <KEY_RESTART>;
+ 			wakeup-source;
+ 		};
+ 	};

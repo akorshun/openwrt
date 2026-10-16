@@ -188,6 +188,20 @@ define U-Boot/hinlink-h28k-rk3528
     hinlink_h28k
 endef
 
+# The NanoPi R28S has no U-Boot target of its own. Upstream is adding one that
+# serves both FriendlyElec RK3528 boards, reading the HW_ID on SARADC channel 2
+# to pick the FDT, so nanopi-zero2-rk3528_defconfig covers the R28S as well:
+# https://lore.kernel.org/u-boot/20261012-nanopi-r28s-v2-0-3d162759dd3d@proton.me/
+# Until that reaches the U-Boot version here, the Zero2 devicetree is what runs,
+# which is the same DRAM, SD/eMMC and RGMII PHY reset pin as the R28S. The
+# kernel FDT comes from the OpenWrt FIT either way.
+define U-Boot/nanopi-zero2-rk3528
+  $(U-Boot/rk3528/Default)
+  NAME:=NanoPi Zero2/R28S
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r28s
+endef
+
 define U-Boot/radxa-e20c-rk3528
   $(U-Boot/rk3528/Default)
   NAME:=E20C
@@ -457,6 +471,7 @@ UBOOT_TARGETS := \
   rock-pi-e-rk3328 \
   rock-pi-e-v3-rk3328 \
   hinlink-h28k-rk3528 \
+  nanopi-zero2-rk3528 \
   radxa-e20c-rk3528 \
   rock-2-rk3528 \
   nanopi-r3s-rk3566 \
