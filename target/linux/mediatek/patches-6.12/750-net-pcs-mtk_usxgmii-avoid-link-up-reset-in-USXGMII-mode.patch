@@ -1,0 +1,49 @@
+From: Pietro Ameruoso <p.ameruoso@live.it>
+Subject: [PATCH] net: pcs: mtk-usxgmii: avoid link-up reset in USXGMII mode
+
+The PCS link-up callback reconfigures the USXGMII PCS and XFI PHY right
+after phylink observes a successful in-band link. The line side stays
+negotiated, but the MediaTek PCS carrier drops again, and since the next
+link-up runs the same callback the port keeps flapping every one to two
+seconds for as long as it is up.
+
+USXGMII negotiates and reports its link state in band and the PCS has
+already been configured before link-up, so do not tear that established
+link down again. Keep the reconfiguration for the fixed-rate 5GBASE-R
+and 10GBASE-R modes, and for a fixed 10G trunk to an external switch,
+which has no in-band partner and does rely on it.
+
+Backport of the 6.18 fix to the 6.12 PCS driver, where the callback is
+an unconditional pcs_config() call. Reported against r11 on the GL-BE14000
+10G WAN port, an RTL8261D in inband/usxgmii mode: link up at 1Gbps,
+carrier down about a second later, repeating, with the correct PHY
+driver bound and no resource exhaustion.
+
+Signed-off-by: Pietro Ameruoso <p.ameruoso@live.it>
+[backport to the 6.12 driver, keep fixed 10G trunks reconfiguring]
+Signed-off-by: Andrey Korshunov <razor1702@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-mtk-usxgmii.c
++++ b/drivers/net/pcs/pcs-mtk-usxgmii.c
+@@ -328,8 +328,21 @@ static void mtk_usxgmii_pcs_link_up(stru
+ 				    phy_interface_t interface,
+ 				    int speed, int duplex)
+ {
++	struct mtk_usxgmii_pcs *mpcs = pcs_to_mtk_usxgmii_pcs(pcs);
++
++	/* USXGMII reports its link state in band and the PCS was already
++	 * configured before the link came up. Reconfiguring here only tears
++	 * down the established link, and as the next link-up calls this
++	 * again, the port flaps for as long as it is up. A fixed 10G trunk
++	 * to an external switch has no in-band partner and does need it.
++	 */
++	if (interface == PHY_INTERFACE_MODE_USXGMII &&
++	    !of_property_read_bool(mpcs->dev->of_node,
++				   "mediatek,force-fixed-10g"))
++		return;
++
+ 	/* Reconfiguring USXGMII to ensure the quality of the RX signal
+ 	 * after the line side link up.
+ 	 */
+ 	mtk_usxgmii_pcs_config(pcs, neg_mode, interface, NULL, false);
+ }

@@ -101,6 +101,7 @@ jobs:
           chk target/linux/mediatek/patches-6.12/747-net-mediatek-ppe-match-bridge-flows-behind-the-YT922x-CPU-tag.patch
           chk target/linux/mediatek/patches-6.12/748-net-mediatek-ppe-retire-only-the-expired-bridge-subflow.patch
           chk target/linux/mediatek/patches-6.12/749-net-bridge-notify-switchdev-before-a-static-FDB-move.patch
+          chk target/linux/mediatek/patches-6.12/750-net-pcs-mtk_usxgmii-avoid-link-up-reset-in-USXGMII-mode.patch
           chk target/linux/mediatek/filogic/base-files/etc/hotplug.d/net/30-wifi-flow-offload
           chk target/linux/mediatek/filogic/base-files/etc/init.d/cpufreq
           grep -q 'MODPARAMS.mt7996e:=wed_enable=1' package/kernel/mt76/Makefile \
@@ -535,6 +536,14 @@ jobs:
 
             ### Changes since the previous release
 
+            * **Fix: the 10G WAN port no longer flaps.** The 6.12 USXGMII PCS
+              reconfigures itself from the link-up callback, which drops the carrier
+              of the link that just came up - and since the next link-up runs the
+              same callback, the port flapped every one to two seconds for as long
+              as it was up, with the correct PHY driver bound. Backported the
+              upstream fix (Pietro Ameruoso), which skips that reconfiguration for
+              in-band USXGMII while keeping it for 10GBASE-R and for the fixed 10G
+              trunk to the YT9224. Reported on the forum against r11.
             * **Fix: a running OpenWrt now accepts the `wan-lan8` sysupgrade image.**
               `sysupgrade` and the LuCI flash tool look for a `sysupgrade-<board>/`
               directory inside the tar, named after the board rather than the image
