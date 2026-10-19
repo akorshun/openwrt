@@ -138,7 +138,7 @@ Refreshed against the 25.12 (6.12) realtek driver.
 +
 +	/* Datasheet requires bit 0 = 1 for the TSSR block to be valid. */
 +	phy_modify_mmd(phydev, MDIO_MMD_VEND2, RTL8261C_VND2_THERMAL_SENSOR_CTRL,
-+		       0, RTL8261C_THERMAL_OVERTEMP_DWNSPD_EN |
++		       RTL8261C_THERMAL_OVERTEMP_DWNSPD_EN,
 +		       RTL8261C_THERMAL_SENSOR_VALID);
 +
 +	return 0;

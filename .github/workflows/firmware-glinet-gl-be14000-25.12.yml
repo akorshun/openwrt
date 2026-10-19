@@ -497,7 +497,16 @@ jobs:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('gl-be14000-25.12.5-build-{0}', github.run_number) }}
           name: GL.iNet Flint 4 (GL-BE14000) 25.12.5 (${{ github.ref_name }})
           files: artifacts/*
+          prerelease: true
           body: |
+            > **Diagnostic build, not a release.** It is r12 with one change: the
+            > RTL8261C/D driver no longer enables the PHY's over-temperature
+            > down-speed bit (VEND2 0xB54C bit 3), it actively clears it instead.
+            > The point is to find out whether the 10G WAN port drops its link on
+            > its own when the PHY believes it is too hot. Please report what the
+            > port does on this image and then go back to a numbered release.
+            > Everything below describes r12.
+
             OpenWrt **25.12.5** build for the **GL.iNet Flint 4 (GL-BE14000)**, MediaTek
             MT7988A, eMMC, MT7996 Wi-Fi 7.
 
