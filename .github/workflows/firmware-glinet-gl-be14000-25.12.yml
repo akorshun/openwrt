@@ -185,6 +185,20 @@ jobs:
           echo "llvm-bpf $(cat llvm-bpf/.llvm-version)"
           llvm-bpf/bin/clang --version | head -1
 
+      - name: Stamp the release into the image
+        # include/image.mk copies $(TOPDIR)/files into every rootfs. The
+        # kernel build timestamp cannot identify a build of this branch -
+        # version.date pins it to the 25.12.5 release date - so put the tag
+        # somewhere a user can read it.
+        run: |
+          mkdir -p files/etc
+          {
+            echo "release=${GITHUB_REF_NAME}"
+            echo "commit=${GITHUB_SHA}"
+            echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > files/etc/gl-be14000-release
+          cat files/etc/gl-be14000-release
+
       - name: Configure build (official 25.12.5 config, GL-BE14000 only)
         run: |
           cp .github/workflows/config/glinet-gl-be14000.config .config
@@ -359,6 +373,8 @@ jobs:
               || { echo "::error::the Wi-Fi flowtable hotplug handler is not in the device rootfs"; fail=1; }
             [ -x "$RD/etc/init.d/cpufreq" ] \
               || { echo "::error::/etc/init.d/cpufreq is not in the device rootfs"; fail=1; }
+            grep -q "^release=" "$RD/etc/gl-be14000-release" 2>/dev/null \
+              || { echo "::error::the release stamp is not in the device rootfs"; fail=1; }
             ls "$RD"/etc/rc.d/S*cpufreq >/dev/null 2>&1 \
               || echo "::warning::/etc/init.d/cpufreq is not enabled in the device rootfs"
             DEVMAN="${TARGET_DIR}/openwrt-25.12.5-mediatek-filogic-${DEVICE}.manifest"
@@ -536,6 +552,20 @@ jobs:
 
             ### Changes since the previous release
 
+            * **The image says which release it is.** `cat /etc/gl-be14000-release`
+              now prints the tag, the commit and the build time. Nothing else in the
+              image could tell them apart: `uname -a` reports the 25.12.5 release
+              date in every build of this branch, because the tree ships a
+              `version.date` that pins the kernel build timestamp, and
+              `DISTRIB_REVISION` describes the upstream base.
+            * **The fan starts earlier.** Its first active step was at 60 C on the CPU
+              thermal zone, so on a board idling in the high forties it never ran,
+              while the 10G PHY sat some 6 C above the CPU. A forum report has the
+              WAN port misbehaving in exactly that state and settling once the fan
+              was forced on, so the step now starts at 45 C. The fan is audible at
+              that level (PWM 80, about 2700 rpm); `echo 0 >
+              /sys/class/thermal/cooling_device0/cur_state` silences it until the
+              governor next raises it.
             * **Fix: the 10G WAN port no longer flaps.** The 6.12 USXGMII PCS
               reconfigures itself from the link-up callback, which drops the carrier
               of the link that just came up - and since the next link-up runs the

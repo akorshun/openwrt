@@ -173,8 +173,13 @@
 			type = "active";
 		};
 
+		/* The 10G PHY runs some 6 C above the CPU sensor and wants
+		 * airflow well before the SoC does: a board idling in the high
+		 * forties kept the fan off at 60 C while the PHY was at 55 C
+		 * and the WAN port was dropping its link.
+		 */
 		cpu_trip_active_low: active-low {
-			temperature = <60000>;
+			temperature = <45000>;
 			hysteresis = <2000>;
 			type = "active";
 		};
