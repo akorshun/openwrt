@@ -497,7 +497,25 @@ jobs:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('gl-be14000-25.12.5-build-{0}', github.run_number) }}
           name: GL.iNet Flint 4 (GL-BE14000) 25.12.5 (${{ github.ref_name }})
           files: artifacts/*
+          prerelease: true
           body: |
+            > **Diagnostic build, not a release.** It is r13 with one change: the
+            > MDIO bus runs at the MediaTek driver default of 2.5 MHz instead of the
+            > 10.5 MHz this board's device tree asks for. The question is whether the
+            > unreliable register access to the 10G PHY - and with it the WAN link
+            > dropping once the chip warms up - comes from that bus speed.
+            >
+            > **Test it with the fan disabled**, which is the condition that
+            > reproduces the fault:
+            >
+            > ```
+            > echo disabled > /sys/class/thermal/thermal_zone0/mode
+            > echo 0 > /sys/class/thermal/cooling_device0/cur_state
+            > cat /sys/class/net/wan/carrier_changes   # before and after 30 min
+            > ```
+            >
+            > Then go back to a numbered release. Everything below describes r13.
+
             OpenWrt **25.12.5** build for the **GL.iNet Flint 4 (GL-BE14000)**, MediaTek
             MT7988A, eMMC, MT7996 Wi-Fi 7.
 

@@ -280,7 +280,12 @@
 };
 
 &mdio_bus {
-	clock-frequency = <10500000>;
+	/* DIAGNOSTIC: the driver's default instead of the 10500000 this
+	 * board's series asks for. No other board in the target overrides
+	 * the MDIO clock, and this one has unreliable register access to
+	 * the RTL8261D that gets worse as the chip warms up.
+	 */
+	clock-frequency = <2500000>;
 
 	phy0: ethernet-phy@0 {
 		/* external multi-gig PHY (c45) */
