@@ -19,6 +19,7 @@ on:
       - 'toolchain/**'
     branches-ignore:
       - master
+      - main-gemtek-xr1710g
   workflow_dispatch:
 
 permissions:
