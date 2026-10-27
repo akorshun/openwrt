@@ -11,6 +11,7 @@ on:
       - 'toolchain/**'
     branches-ignore:
       - master
+      - main-gemtek-xr1710g
 
 permissions:
   contents: read
