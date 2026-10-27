@@ -353,6 +353,7 @@
 			reset-deassert-us = <200000>;
 			tx-polarity = <PHY_POL_INVERT>;
 			rx-polarity = <PHY_POL_INVERT>;
+			realtek,patch-rtk-serdes;
 		};
 
 		phy8: ethernet-phy@8 {
@@ -363,6 +364,7 @@
 			reset-deassert-us = <200000>;
 			tx-polarity = <PHY_POL_INVERT>;
 			rx-polarity = <PHY_POL_INVERT>;
+			realtek,patch-rtk-serdes;
 		};
 	};
 };
