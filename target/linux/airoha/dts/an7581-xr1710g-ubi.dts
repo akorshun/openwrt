@@ -85,3 +85,11 @@
 	function-enumerator = <4>;
 	active-low;
 };
+
+&phy5 {
+	realtek,patch-rtk-serdes;
+};
+
+&phy8 {
+	realtek,patch-rtk-serdes;
+};
