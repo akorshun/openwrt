@@ -114,6 +114,7 @@ define Device/gemtek_xr1710g-ubi
   DEVICE_ALT0_MODEL := XR1710G
   DEVICE_ALT0_VARIANT := (UBI)
   DEVICE_DTS := an7581-xr1710g-ubi
+  SUPPORTED_DEVICES += econet,xr1710g-ubi gemtek,xr1710g
   DEVICE_PACKAGES := airoha-en7581-mt7996-npu-firmware fitblk \
 		    kmod-hwmon-nct7802 kmod-mt7996-firmware wpad-basic-mbedtls \
 		    rtl826x-firmware
