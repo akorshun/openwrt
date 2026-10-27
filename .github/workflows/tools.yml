@@ -13,6 +13,7 @@ on:
       - '.github/workflows/tools.yml'
     branches-ignore:
       - master
+      - main-gemtek-xr1710g
 
 permissions:
   contents: read
