@@ -9,6 +9,11 @@ name: Build Gemtek XR1710G
 # branch in branches-ignore. Every run publishes its images as a GitHub
 # release.
 #
+# A tag ending in "-kmods" (xr1710g-r9-kmods) also builds every kernel module
+# (CONFIG_ALL_KMODS) and attaches them to the release as an apk repository. The
+# kernel config, and so the vermagic, of such a build differs from a plain one:
+# its modules only fit the firmware of the same release.
+#
 # The tag pattern is deliberately not 'v*': the stock github-release.yml
 # inherited from upstream fires on 'v*' and would race this workflow for the
 # same release.
@@ -18,6 +23,14 @@ on:
     inputs:
       verbose:
         description: "Verbose make (V=s)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      kmods:
+        description: "Also build all kernel modules (as a -kmods tag does)"
         required: false
         default: "false"
         type: choice
@@ -40,6 +53,7 @@ env:
   TARGET_DIR: bin/targets/airoha/an7581
   DTS: an7581-xr1710g-ubi
   UBOOT: an7581_gemtek_xr1710g
+  KMODS: ${{ (endsWith(github.ref_name, '-kmods') || inputs.kmods == 'true') && '1' || '' }}
 
 jobs:
   build:
@@ -140,6 +154,7 @@ jobs:
             echo "CONFIG_TARGET_airoha_an7581_DEVICE_${DEVICE}=y"
             echo 'CONFIG_PACKAGE_luci=y'
             echo 'CONFIG_BUILD_LOG=y'
+            if [ -n "$KMODS" ]; then echo 'CONFIG_ALL_KMODS=y'; fi
           } > .config
           make defconfig
 
@@ -164,6 +179,11 @@ jobs:
             grep -qE "^CONFIG_PACKAGE_${p}=[ym]" .config \
               || { echo "::error::${p} is not selected"; fail=1; }
           done
+          if [ -n "$KMODS" ]; then
+            grep -qx 'CONFIG_ALL_KMODS=y' .config \
+              || { echo "::error::CONFIG_ALL_KMODS did not survive defconfig"; fail=1; }
+            echo "kmods build: $(grep -cE '^CONFIG_PACKAGE_kmod-[^=]+=m' .config) kernel modules as packages"
+          fi
           [ "$fail" = 0 ] || exit 1
           echo "device and chainloader selected, LuCI, PHY, Wi-Fi and fan drivers in"
 
@@ -203,9 +223,13 @@ jobs:
 
       - name: Build firmware
         run: |
-          make -j$(nproc) \
+          # In a kmods build a module that fails to build must not cost the
+          # firmware: skip it ("m" packages), the images only use "y" ones.
+          ign=()
+          if [ -n "$KMODS" ]; then ign=(IGNORE_ERRORS=m); fi
+          make -j$(nproc) "${ign[@]}" \
             ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
-            make -j1 V=s
+            make -j1 V=s "${ign[@]}"
 
       - name: Verify the built DTB
         # The DTB is most of the port. Check the compiled one describes this
@@ -298,6 +322,29 @@ jobs:
           done
           [ "$fail" = 0 ] || exit 1
 
+      - name: Collect kernel modules
+        if: success() && env.KMODS
+        # bin/targets/.../packages holds the target's kmods plus a signed
+        # packages.adb index. The firmware of this run trusts the key that
+        # signed it, so the directory works as a local apk repository.
+        run: |
+          PKG="${TARGET_DIR}/packages"
+          [ -f "$PKG/packages.adb" ] || { echo "::error::no packages.adb in $PKG"; exit 1; }
+          n=$(ls "$PKG"/kmod-*.apk 2>/dev/null | wc -l)
+          [ "$n" -gt 100 ] || { echo "::error::only $n kmods were built"; exit 1; }
+          ls "$PKG" | grep -E '\.apk$' | sed 's/\.apk$//' > artifacts/kmods.txt
+          tar -C "${TARGET_DIR}" -czf "artifacts/openwrt-airoha-an7581-${DEVICE}-kmods.tar.gz" packages
+          # Modules that failed and were skipped (IGNORE_ERRORS)
+          find logs -name error.txt -exec cat {} + 2>/dev/null > artifacts/kmods-failed.txt || true
+          if [ -s artifacts/kmods-failed.txt ]; then
+            echo "::warning::$(wc -l < artifacts/kmods-failed.txt) packages failed to build, see kmods-failed.txt"
+          else
+            rm -f artifacts/kmods-failed.txt
+          fi
+          echo "KMODS_COUNT=$n" >> "$GITHUB_ENV"
+          echo "VERMAGIC=$(find build_dir/target-* -maxdepth 3 -name .vermagic | head -1 | xargs cat)" >> "$GITHUB_ENV"
+          ls -lh artifacts/
+
       - name: Upload firmware artifacts
         if: success()
         uses: actions/upload-artifact@v4
@@ -307,6 +354,95 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: Write the release notes
+        if: success()
+        run: |
+          cat > release-body.md <<'EOF'
+          OpenWrt build for the **Gemtek / Brightspeed XR1710G** (Airoha AN7581).
+
+          Built from `${{ github.sha }}`, branch `main-gemtek-xr1710g`
+          (OpenWrt main plus the board support and the community fixes for the
+          RTL8261BE 10G links).
+
+          ### Flash layout
+
+          Same as the Gemtek W1700K "layout 2.0": the vendor bootloader stays,
+          the U-Boot chainloader lives in the `chainloader` partition
+          (`0x600000`, 1 MiB), OpenWrt lives in UBI (`0x700000`-`0x1be00000`),
+          and the vendor BMT pool at the end of flash is left alone.
+
+          ### Installing
+
+          * **Already running OpenWrt in this layout** (vendor / chainloader /
+            ubi / reserved_bmt in `/proc/mtd`, e.g. the YYH2913 or naoki66
+            chainloader builds): `sysupgrade -n` with
+            `*-squashfs-sysupgrade.itb`. With the YYH2913 http-uboot in the
+            chainloader slot the same file can be uploaded from its web
+            recovery as layout 2.0.
+          * **Coming from `xr1710g-r2` ... `xr1710g-r4`**: those set the
+            board compat version to 2.0, which was dropped afterwards, so
+            sysupgrade refuses the image. Reset it first, then upgrade as
+            usual: `uci set system.@system[0].compat_version=1.0 && uci commit system`.
+          * **Stock firmware**: over the serial console (115200 8N1), as for
+            the W1700K - flash `*-chainload-uboot.itb` to `0x600000` from the
+            vendor U-Boot, then boot the UBI installer from
+            https://github.com/hurrian/w1700k-ubi-installer via the chainloader
+            TFTP menu. The full procedure is in the commit
+            "airoha: add support for Gemtek XR1710G" on this branch.
+
+          ### Recovery with the reset button
+
+          The chainloader from this release (it is **not** updated by
+          sysupgrade, write `*-chainload-uboot.itb` to the `chainloader`
+          partition once) boots the recovery image via TFTP when reset is
+          held while it starts:
+
+          1. Give the PC the address `192.168.1.254/24` (`192.168.1.10/24` for the
+             chainloader from `xr1710g-r5` ... `xr1710g-r7`), connect it to a LAN
+             port and serve `*-initramfs-recovery.itb` from a TFTP server.
+          2. Power the router on, press reset **1-2 s later** (held at
+             power-on the SoC waits for a UART download instead) and keep it
+             pressed until the blue LED lights up, about 15-20 s.
+          3. The recovery system comes up at `192.168.1.1`; sysupgrade from
+             there.
+
+          Do **not** flash this over the naoki66 "full UBI" layout (`bl2` +
+          `ubi` from `0x20000`, replaced bootloader): that layout is different.
+
+          ### Files
+
+          * `*-squashfs-sysupgrade.itb` - sysupgrade image
+          * `*-initramfs-recovery.itb` - RAM-only image for the chainloader TFTP menu
+          * `*-chainload-uboot.itb` - the U-Boot chainloader for the `chainloader` partition
+          * `profiles.json`, `sha256sums`, `build.config` - build metadata
+          EOF
+          if [ -n "$KMODS" ]; then
+            cat >> release-body.md <<EOF
+
+          ### Kernel modules
+
+          This is a **kmods** build: all ${KMODS_COUNT} kernel modules are in
+          \`openwrt-airoha-an7581-${DEVICE}-kmods.tar.gz\` (list in \`kmods.txt\`),
+          vermagic \`${VERMAGIC}\`. They only fit the firmware **of this release** -
+          the kernel config of a kmods build differs from a plain one. The archive is a
+          local apk repository signed with the key this firmware trusts:
+
+          \`\`\`sh
+          # on the router, with the archive copied to /tmp
+          cd /tmp && tar xzf openwrt-airoha-an7581-${DEVICE}-kmods.tar.gz
+          apk add --repository file:///tmp/packages/packages.adb kmod-<name>
+          \`\`\`
+
+          If apk refuses the index signature (firmware from another build), the
+          modules do not fit that firmware anyway: flash the firmware of this release.
+          EOF
+            if [ -f artifacts/kmods-failed.txt ]; then
+              echo "" >> release-body.md
+              echo "Some modules failed to build and are missing, see \`kmods-failed.txt\`." >> release-body.md
+            fi
+          fi
+          cat release-body.md
+
       - name: Create GitHub Release
         if: success()
         uses: softprops/action-gh-release@v2
@@ -314,65 +450,7 @@ jobs:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('xr1710g-build-{0}', github.run_number) }}
           name: Gemtek XR1710G (${{ github.ref_name }})
           files: artifacts/*
-          body: |
-            OpenWrt build for the **Gemtek / Brightspeed XR1710G** (Airoha AN7581).
-
-            Built from `${{ github.sha }}`, branch `main-gemtek-xr1710g`
-            (OpenWrt main plus the board support and the community fixes for the
-            RTL8261BE 10G links).
-
-            ### Flash layout
-
-            Same as the Gemtek W1700K "layout 2.0": the vendor bootloader stays,
-            the U-Boot chainloader lives in the `chainloader` partition
-            (`0x600000`, 1 MiB), OpenWrt lives in UBI (`0x700000`-`0x1be00000`),
-            and the vendor BMT pool at the end of flash is left alone.
-
-            ### Installing
-
-            * **Already running OpenWrt in this layout** (vendor / chainloader /
-              ubi / reserved_bmt in `/proc/mtd`, e.g. the YYH2913 or naoki66
-              chainloader builds): `sysupgrade -n` with
-              `*-squashfs-sysupgrade.itb`. With the YYH2913 http-uboot in the
-              chainloader slot the same file can be uploaded from its web
-              recovery as layout 2.0.
-            * **Coming from `xr1710g-r2` ... `xr1710g-r4`**: those set the
-              board compat version to 2.0, which was dropped afterwards, so
-              sysupgrade refuses the image. Reset it first, then upgrade as
-              usual: `uci set system.@system[0].compat_version=1.0 && uci commit system`.
-            * **Stock firmware**: over the serial console (115200 8N1), as for
-              the W1700K - flash `*-chainload-uboot.itb` to `0x600000` from the
-              vendor U-Boot, then boot the UBI installer from
-              https://github.com/hurrian/w1700k-ubi-installer via the chainloader
-              TFTP menu. The full procedure is in the commit
-              "airoha: add support for Gemtek XR1710G" on this branch.
-
-            ### Recovery with the reset button
-
-            The chainloader from this release (it is **not** updated by
-            sysupgrade, write `*-chainload-uboot.itb` to the `chainloader`
-            partition once) boots the recovery image via TFTP when reset is
-            held while it starts:
-
-            1. Give the PC the address `192.168.1.254/24` (`192.168.1.10/24` for the
-               chainloader from `xr1710g-r5` ... `xr1710g-r7`), connect it to a LAN
-               port and serve `*-initramfs-recovery.itb` from a TFTP server.
-            2. Power the router on, press reset **1-2 s later** (held at
-               power-on the SoC waits for a UART download instead) and keep it
-               pressed until the blue LED lights up, about 15-20 s.
-            3. The recovery system comes up at `192.168.1.1`; sysupgrade from
-               there.
-
-            Do **not** flash this over the naoki66 "full UBI" layout (`bl2` +
-            `ubi` from `0x20000`, replaced bootloader): that layout is different.
-
-            ### Files
-
-            * `*-squashfs-sysupgrade.itb` - sysupgrade image
-            * `*-initramfs-recovery.itb` - RAM-only image for the chainloader TFTP menu
-            * `*-chainload-uboot.itb` - the U-Boot chainloader for the `chainloader` partition
-            * `profiles.json`, `sha256sums`, `build.config` - build metadata
-
+          body_path: release-body.md
       - name: Upload build logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
