@@ -14,6 +14,11 @@ name: Build Gemtek XR1710G
 # kernel config, and so the vermagic, of such a build differs from a plain one:
 # its modules only fit the firmware of the same release.
 #
+# The Gemtek W1700K is built alongside: both boards share
+# an7581-gemtek_w1700k-common.dtsi, and the W1700K devicetree is compared with
+# the one built from its DTS before the split, so a change to the shared parts
+# that alters the W1700K shows up here.
+#
 # The tag pattern is deliberately not 'v*': the stock github-release.yml
 # inherited from upstream fires on 'v*' and would race this workflow for the
 # same release.
@@ -53,6 +58,9 @@ env:
   TARGET_DIR: bin/targets/airoha/an7581
   DTS: an7581-xr1710g-ubi
   UBOOT: an7581_gemtek_xr1710g
+  W_DEVICE: gemtek_w1700k-ubi
+  W_DTS: an7581-w1700k-ubi
+  W_UBOOT: an7581_gemtek_w1700k
   KMODS: ${{ (endsWith(github.ref_name, '-kmods') || inputs.kmods == 'true') && '1' || '' }}
 
 jobs:
@@ -73,6 +81,9 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # deep enough to reach the W1700K DTS from before the common dtsi
+          fetch-depth: 50
 
       - name: Install build dependencies
         run: |
@@ -146,12 +157,15 @@ jobs:
           done
           ./scripts/feeds install -a
 
-      - name: Configure build (XR1710G only)
+      - name: Configure build (XR1710G and W1700K)
         run: |
           {
             echo 'CONFIG_TARGET_airoha=y'
             echo 'CONFIG_TARGET_airoha_an7581=y'
-            echo "CONFIG_TARGET_airoha_an7581_DEVICE_${DEVICE}=y"
+            echo 'CONFIG_TARGET_MULTI_PROFILE=y'
+            echo 'CONFIG_TARGET_PER_DEVICE_ROOTFS=y'
+            echo "CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_${DEVICE}=y"
+            echo "CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_${W_DEVICE}=y"
             echo 'CONFIG_PACKAGE_luci=y'
             echo 'CONFIG_BUILD_LOG=y'
             if [ -n "$KMODS" ]; then echo 'CONFIG_ALL_KMODS=y'; fi
@@ -170,6 +184,10 @@ jobs:
             || { echo "::error::${DEVICE} is not selected after defconfig"; fail=1; }
           grep -qx "CONFIG_PACKAGE_u-boot-${UBOOT}=y" .config \
             || { echo "::error::u-boot-${UBOOT} is not selected - there would be no chainloader"; fail=1; }
+          grep -qE "^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_${W_DEVICE}=y" .config \
+            || { echo "::error::${W_DEVICE} is not selected after defconfig"; fail=1; }
+          grep -qx "CONFIG_PACKAGE_u-boot-${W_UBOOT}=y" .config \
+            || { echo "::error::u-boot-${W_UBOOT} is not selected - no W1700K chainloader"; fail=1; }
           # LuCI comes from the luci feed, so it only survives defconfig once
           # the feeds are installed.
           grep -qx 'CONFIG_PACKAGE_luci=y' .config \
@@ -265,6 +283,43 @@ jobs:
           [ "$fail" = 0 ] || exit 1
           echo "DTB describes the XR1710G"
 
+      - name: Compare the W1700K DTB with the one from before the common dtsi
+        # Build the W1700K DTS from the parent of the commit that introduced
+        # an7581-gemtek_w1700k-common.dtsi with the kernel's own cpp flags and
+        # dtc, and diff it against the DTB of this build. Only the changes made
+        # on purpose in that commit are allowed: the wan_mac reference without
+        # an argument and the generic node names wifi@0,0 / partition@1be00000.
+        run: |
+          WDTB=$(find build_dir -name "image-${W_DTS}.dtb" 2>/dev/null | head -1)
+          [ -n "$WDTB" ] || { echo "::error::no image-${W_DTS}.dtb found in build_dir"; exit 1; }
+          SPLIT=$(git log -1 --format=%H --grep='^airoha: an7581: move the Gemtek W1700K DTS into a common dtsi')
+          [ -n "$SPLIT" ] || { echo "::error::the common dtsi commit is not in the fetched history"; exit 1; }
+          KSRC=$(find build_dir/target-* -maxdepth 2 -type d -name 'linux-6.18*' | head -1)
+          DTC="$KSRC/scripts/dtc/dtc"
+          [ -x "$DTC" ] || { echo "::error::no dtc in $KSRC"; exit 1; }
+          rm -rf /tmp/olddts && mkdir -p /tmp/olddts
+          git archive "${SPLIT}^" target/linux/airoha/dts | tar -x -C /tmp/olddts
+          cpp -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
+            -I /tmp/olddts/target/linux/airoha/dts -I "$KSRC/include" \
+            -I "$KSRC/scripts/dtc/include-prefixes" \
+            "/tmp/olddts/target/linux/airoha/dts/${W_DTS}.dts" \
+            | "$DTC" -q -I dts -O dtb -o /tmp/w1700k-old.dtb -
+          "$DTC" -q -s -I dtb -O dts /tmp/w1700k-old.dtb > /tmp/w1700k-old.dts
+          "$DTC" -q -s -I dtb -O dts "$WDTB" > /tmp/w1700k-new.dts
+          diff -u /tmp/w1700k-old.dts /tmp/w1700k-new.dts > /tmp/w1700k.diff || true
+          echo "----- W1700K devicetree, ${SPLIT:0:10}^ -> this build -----"
+          cat /tmp/w1700k.diff
+          # Changed lines that are not one of the expected ones
+          unexpected=$(grep -E '^[-+]' /tmp/w1700k.diff | grep -vE '^(---|\+\+\+) ' \
+            | grep -vE '^[-+][[:space:]]*(nvmem-cells = <0x[0-9a-f]+( 0x00)?>;|mt7996@0,0 \{|wifi@0,0 \{|reserved_bmt@1be00000 \{|partition@1be00000 \{|label = "reserved_bmt";|read-only;|reg = <0x1be00000 0x4200000>;|\};)?[[:space:]]*$' || true)
+          if [ -n "$unexpected" ]; then
+            echo "::error::the W1700K devicetree changed beyond the expected lines:"
+            echo "$unexpected"
+            exit 1
+          fi
+          cp /tmp/w1700k.diff w1700k-dtb.diff
+          echo "W1700K devicetree unchanged apart from the expected lines"
+
       - name: Verify the chainloader
         # The chainloader is what the vendor bootloader loads from flash. Make
         # sure it is the XR1710G one, with the W1700K-compatible UBI layout.
@@ -311,14 +366,18 @@ jobs:
         run: |
           mkdir -p artifacts
           cp -v "${TARGET_DIR}"/*gemtek_xr1710g* artifacts/ 2>/dev/null || true
+          cp -v "${TARGET_DIR}"/*gemtek_w1700k* artifacts/ 2>/dev/null || true
+          cp -v w1700k-dtb.diff artifacts/ 2>/dev/null || true
           cp -v "${TARGET_DIR}"/sha256sums artifacts/ 2>/dev/null || true
           cp -v "${TARGET_DIR}"/profiles.json artifacts/ 2>/dev/null || true
           cp -v .config artifacts/build.config 2>/dev/null || true
           ls -lh artifacts/
           fail=0
-          for f in squashfs-sysupgrade.itb initramfs-recovery.itb chainload-uboot.itb; do
-            ls artifacts/ | grep -q -- "$f" \
-              || { echo "::error::no $f was produced"; fail=1; }
+          for d in "$DEVICE" "$W_DEVICE"; do
+            for f in squashfs-sysupgrade.itb initramfs-recovery.itb chainload-uboot.itb; do
+              ls artifacts/ | grep -q -- "$d-$f" \
+                || { echo "::error::no $d-$f was produced"; fail=1; }
+            done
           done
           [ "$fail" = 0 ] || exit 1
 
@@ -409,6 +468,15 @@ jobs:
           Do **not** flash this over the naoki66 "full UBI" layout (`bl2` +
           `ubi` from `0x20000`, replaced bootloader): that layout is different.
 
+          ### Gemtek W1700K
+
+          The `*-gemtek_w1700k-ubi-*` files are the Gemtek W1700K built from the
+          same tree: both boards share `an7581-gemtek_w1700k-common.dtsi`. The
+          W1700K devicetree was compared with the one built from its DTS before
+          the split (`w1700k-dtb.diff`): only the `wan_mac` reference and the
+          generic node names `wifi@0,0` / `partition@1be00000` differ. They are
+          a build check for the shared devicetree, not tested on a W1700K.
+
           ### Files
 
           * `*-squashfs-sysupgrade.itb` - sysupgrade image
@@ -448,7 +516,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('xr1710g-build-{0}', github.run_number) }}
-          name: Gemtek XR1710G (${{ github.ref_name }})
+          name: Gemtek XR1710G + W1700K (${{ github.ref_name }})
           files: artifacts/*
           body_path: release-body.md
       - name: Upload build logs on failure
