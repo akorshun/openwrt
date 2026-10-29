@@ -286,7 +286,8 @@ jobs:
       - name: Compare the W1700K DTB with the one from before the common dtsi
         # Build the W1700K DTS from the parent of the commit that introduced
         # an7581-gemtek_w1700k-common.dtsi with the kernel's own cpp flags and
-        # dtc, and diff it against the DTB of this build. Only the changes made
+        # dtc (with -@, as the kernel builds its DTBs with symbols), and
+        # diff it against the DTB of this build. Only the changes made
         # on purpose in that commit are allowed: the wan_mac reference without
         # an argument and the generic node names wifi@0,0 / partition@1be00000.
         run: |
@@ -303,7 +304,7 @@ jobs:
             -I /tmp/olddts/target/linux/airoha/dts -I "$KSRC/include" \
             -I "$KSRC/scripts/dtc/include-prefixes" \
             "/tmp/olddts/target/linux/airoha/dts/${W_DTS}.dts" \
-            | "$DTC" -q -I dts -O dtb -o /tmp/w1700k-old.dtb -
+            | "$DTC" -q -@ -I dts -O dtb -o /tmp/w1700k-old.dtb -
           "$DTC" -q -s -I dtb -O dts /tmp/w1700k-old.dtb > /tmp/w1700k-old.dts
           "$DTC" -q -s -I dtb -O dts "$WDTB" > /tmp/w1700k-new.dts
           diff -u /tmp/w1700k-old.dts /tmp/w1700k-new.dts > /tmp/w1700k.diff || true
