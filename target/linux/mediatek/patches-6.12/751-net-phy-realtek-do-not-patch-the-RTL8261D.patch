@@ -76,3 +76,22 @@ Signed-off-by: Andrey Korshunov <razor1702@gmail.com>
 +				       rtl8261c_phy_patch_db_init);
  	if (ret < 0)
  		return ret;
+--- a/drivers/net/phy/realtek/phy_patch.c
++++ b/drivers/net/phy/realtek/phy_patch.c
+@@ -13,8 +13,14 @@ int rtlgen_phy_patch(struct phy_device *phydev)
+ 	struct rtlgen_phy_patch_db *patch_db = priv->patch;
+ 	size_t i;
+ 	int ret;
+ 
+-	if (!patch_db || !patch_db->patch_op_exec) {
+-		phydev_err(phydev, "patch db or exec callback is NULL\n");
++	/* A chip that needs no patch has no db - see the RTL8261D in
++	 * rtl8261c_cg_probe(). There is nothing to execute for it.
++	 */
++	if (!patch_db)
++		return 0;
++
++	if (!patch_db->patch_op_exec) {
++		phydev_err(phydev, "patch db has no exec callback\n");
+ 		return -EINVAL;
+ 	}
