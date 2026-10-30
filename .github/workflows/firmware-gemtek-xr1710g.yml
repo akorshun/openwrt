@@ -289,7 +289,8 @@ jobs:
         # dtc (with -@, as the kernel builds its DTBs with symbols), and
         # diff it against the DTB of this build. Only the changes made
         # on purpose in that commit are allowed: the wan_mac reference without
-        # an argument and the generic node names wifi@0,0 / partition@1be00000.
+        # an argument, the generic node names wifi@0,0 / partition@1be00000
+        # and the status LEDs sorted by GPIO (white led-2, red led-3).
         run: |
           WDTB=$(find build_dir -name "image-${W_DTS}.dtb" 2>/dev/null | head -1)
           [ -n "$WDTB" ] || { echo "::error::no image-${W_DTS}.dtb found in build_dir"; exit 1; }
@@ -312,7 +313,9 @@ jobs:
           cat /tmp/w1700k.diff
           # Changed lines that are not one of the expected ones
           unexpected=$(grep -E '^[-+]' /tmp/w1700k.diff | grep -vE '^(---|\+\+\+) ' \
-            | grep -vE '^[-+][[:space:]]*(nvmem-cells = <0x[0-9a-f]+( 0x00)?>;|mt7996@0,0 \{|wifi@0,0 \{|reserved_bmt@1be00000 \{|partition@1be00000 \{|label = "reserved_bmt";|read-only;|reg = <0x1be00000 0x4200000>;|\};)?[[:space:]]*$' || true)
+            | grep -vE '^[-+][[:space:]]*(nvmem-cells = <0x[0-9a-f]+( 0x00)?>;|mt7996@0,0 \{|wifi@0,0 \{|reserved_bmt@1be00000 \{|partition@1be00000 \{|label = "reserved_bmt";|read-only;|reg = <0x1be00000 0x4200000>;|\};)?[[:space:]]*$' \
+            | grep -vE '^[-+][[:space:]]*(led-boot|led_status_(red|white)) = "/leds/led-[23]";$' \
+            | grep -vE '^[-+][[:space:]]*(color = <0x0[01]>;|gpios = <0x[0-9a-f]+ 0x(14|1d) 0x01>;)$' || true)
           if [ -n "$unexpected" ]; then
             echo "::error::the W1700K devicetree changed beyond the expected lines:"
             echo "$unexpected"
@@ -474,8 +477,9 @@ jobs:
           The `*-gemtek_w1700k-ubi-*` files are the Gemtek W1700K built from the
           same tree: both boards share `an7581-gemtek_w1700k-common.dtsi`. The
           W1700K devicetree was compared with the one built from its DTS before
-          the split (`w1700k-dtb.diff`): only the `wan_mac` reference and the
-          generic node names `wifi@0,0` / `partition@1be00000` differ. They are
+          the split (`w1700k-dtb.diff`): only the `wan_mac` reference, the
+          generic node names `wifi@0,0` / `partition@1be00000` and the order of
+          the white and red status LEDs (`led-2` / `led-3`) differ. They are
           a build check for the shared devicetree, not tested on a W1700K.
 
           ### Files
