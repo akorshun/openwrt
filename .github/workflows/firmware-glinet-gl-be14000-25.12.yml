@@ -102,6 +102,7 @@ jobs:
           chk target/linux/mediatek/patches-6.12/748-net-mediatek-ppe-retire-only-the-expired-bridge-subflow.patch
           chk target/linux/mediatek/patches-6.12/749-net-bridge-notify-switchdev-before-a-static-FDB-move.patch
           chk target/linux/mediatek/patches-6.12/750-net-pcs-mtk_usxgmii-avoid-link-up-reset-in-USXGMII-mode.patch
+          chk target/linux/mediatek/patches-6.12/751-net-phy-realtek-do-not-patch-the-RTL8261D.patch
           chk target/linux/mediatek/filogic/base-files/etc/hotplug.d/net/30-wifi-flow-offload
           chk target/linux/mediatek/filogic/base-files/etc/init.d/cpufreq
           grep -q 'MODPARAMS.mt7996e:=wed_enable=1' package/kernel/mt76/Makefile \
@@ -497,6 +498,7 @@ jobs:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('gl-be14000-25.12.5-build-{0}', github.run_number) }}
           name: GL.iNet Flint 4 (GL-BE14000) 25.12.5 (${{ github.ref_name }})
           files: artifacts/*
+          prerelease: ${{ contains(github.ref_name, '-test') }}
           body: |
             OpenWrt **25.12.5** build for the **GL.iNet Flint 4 (GL-BE14000)**, MediaTek
             MT7988A, eMMC, MT7996 Wi-Fi 7.

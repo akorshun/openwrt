@@ -1,0 +1,75 @@
+From: Andrey Korshunov <razor1702@gmail.com>
+Subject: [PATCH] net: phy: realtek: do not apply the RTL8261C patch to an RTL8261D
+
+The RTL8261C and the RTL8261D share the PHY ID 0x001cc898 and are told
+apart by a sub id in extended register 0x801d: 0x00 is the C, 0x81 the D.
+Mainline grew that distinction in v7.3, in Realtek's own words: "RTL8261D
+is also 10g phy. It's sub_phy_id is 0x81. And it does not need any
+firmware." (f0667918d5fc, net: phy: realtek: add support for RTL8261D).
+
+This driver matches both chips on that one ID and pushes the C's patch
+script into whatever it finds. On a GL-BE14000 whose 10G port is an
+RTL8261D that costs the port: a 1000BASE-T link starts dropping within
+half an hour, the drops get denser and the recovery slower until the PHY
+stops answering and only removing power brings it back. 100BASE-TX
+survives, and so does the GL.iNet stock firmware, whose vendor driver
+(rtl8261x-mdio) ships no blob for this PHY at all. Reported on the
+OpenWrt forum against r11-r13 and reproduced on the 6.18 snapshot, which
+carries the same driver.
+
+Read the sub id and skip the patch for the D. Everything else keeps its
+current behaviour, and the detected model is logged so the next report
+says which chip it came from.
+
+Assisted-By: Claude Opus 5 <noreply@anthropic.com>
+Signed-off-by: Andrey Korshunov <razor1702@gmail.com>
+---
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -200,3 +200,6 @@
+ /* RTL8261C-CG indirect register addresses */
++#define RTL8261X_SUB_PHY_ID_ADDR		0x801D
++#define RTL8261D_SUB_ID				0x81
++
+ #define RTL8261C_INDIRECT_PATCH_VER		0x801E
+ #define RTL8261C_INDIRECT_PATCH_SETUP		0x8023
+@@ -300,14 +303,35 @@ static int rtl826x_probe(struct phy_device *phydev)
+ static int rtl8261c_cg_probe(struct phy_device *phydev)
+ {
+-	int ret;
++	int ret, sub_id;
+ 
+ 	ret = rtl826x_probe(phydev);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	ret = rtl8261c_phy_patch_db_init(phydev);
+-	if (ret < 0)
+-		return ret;
++	/* The RTL8261C and the RTL8261D share this PHY ID and differ by a
++	 * sub id in extended register 0x801d. The D needs no patch
++	 * firmware at all; applying the C's wrecks its 1000BASE-T links.
++	 */
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND2,
++		            RTL8261C_VND2_INDIRECT_ADDR,
++		            RTL8261X_SUB_PHY_ID_ADDR);
++	if (ret < 0)
++		return ret;
++
++	sub_id = phy_read_mmd(phydev, MDIO_MMD_VEND2,
++		              RTL8261C_VND2_INDIRECT_DATA);
++	if (sub_id < 0)
++		return sub_id;
++
++	sub_id = (sub_id >> 8) & 0xff;
++	phydev_info(phydev, "RTL8261%c detected (sub_id 0x%02x)\n",
++		    sub_id == RTL8261D_SUB_ID ? 'D' : 'C', sub_id);
++
++	if (sub_id != RTL8261D_SUB_ID) {
++		ret = rtl8261c_phy_patch_db_init(phydev);
++		if (ret < 0)
++			return ret;
++	}
+ 
+ 	/* Datasheet requires bit 0 = 1 for the TSSR block to be valid. */
+ 	phy_modify_mmd(phydev, MDIO_MMD_VEND2, RTL8261C_VND2_THERMAL_SENSOR_CTRL,
