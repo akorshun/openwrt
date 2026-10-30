@@ -26,38 +26,44 @@ Signed-off-by: Andrey Korshunov <razor1702@gmail.com>
 ---
 --- a/drivers/net/phy/realtek/realtek_main.c
 +++ b/drivers/net/phy/realtek/realtek_main.c
-@@ -200,3 +200,6 @@
+@@ -251,3 +251,6 @@
  /* RTL8261C-CG indirect register addresses */
 +#define RTL8261X_SUB_PHY_ID_ADDR		0x801D
 +#define RTL8261D_SUB_ID				0x81
 +
  #define RTL8261C_INDIRECT_PATCH_VER		0x801E
  #define RTL8261C_INDIRECT_PATCH_SETUP		0x8023
-@@ -300,14 +303,35 @@ static int rtl826x_probe(struct phy_device *phydev)
- static int rtl8261c_cg_probe(struct phy_device *phydev)
+@@ -2228,6 +2228,8 @@
+ 	phydev->eee_broken_modes |= MDIO_EEE_100TX | MDIO_EEE_1000T;
+ 
+-	ret = patch_db_init(phydev);
+-	if (ret < 0)
+-		return ret;
++	if (patch_db_init) {
++		ret = patch_db_init(phydev);
++		if (ret < 0)
++			return ret;
++	}
+ 
+@@ -2386,7 +2386,27 @@ static int rtl8261c_cg_probe(struct phy_device *phydev)
  {
 -	int ret;
 +	int ret, sub_id;
  
- 	ret = rtl826x_probe(phydev);
- 	if (ret < 0)
- 		return ret;
- 
--	ret = rtl8261c_phy_patch_db_init(phydev);
--	if (ret < 0)
--		return ret;
+-	ret = rtl826x_probe_with_patch(phydev,
+-				       rtl8261c_phy_patch_db_init);
 +	/* The RTL8261C and the RTL8261D share this PHY ID and differ by a
 +	 * sub id in extended register 0x801d. The D needs no patch
 +	 * firmware at all; applying the C's wrecks its 1000BASE-T links.
 +	 */
 +	ret = phy_write_mmd(phydev, MDIO_MMD_VEND2,
-+		            RTL8261C_VND2_INDIRECT_ADDR,
-+		            RTL8261X_SUB_PHY_ID_ADDR);
++				    RTL8261C_VND2_INDIRECT_ADDR,
++				    RTL8261X_SUB_PHY_ID_ADDR);
 +	if (ret < 0)
 +		return ret;
 +
 +	sub_id = phy_read_mmd(phydev, MDIO_MMD_VEND2,
-+		              RTL8261C_VND2_INDIRECT_DATA);
++				      RTL8261C_VND2_INDIRECT_DATA);
 +	if (sub_id < 0)
 +		return sub_id;
 +
@@ -65,11 +71,8 @@ Signed-off-by: Andrey Korshunov <razor1702@gmail.com>
 +	phydev_info(phydev, "RTL8261%c detected (sub_id 0x%02x)\n",
 +		    sub_id == RTL8261D_SUB_ID ? 'D' : 'C', sub_id);
 +
-+	if (sub_id != RTL8261D_SUB_ID) {
-+		ret = rtl8261c_phy_patch_db_init(phydev);
-+		if (ret < 0)
-+			return ret;
-+	}
- 
- 	/* Datasheet requires bit 0 = 1 for the TSSR block to be valid. */
- 	phy_modify_mmd(phydev, MDIO_MMD_VEND2, RTL8261C_VND2_THERMAL_SENSOR_CTRL,
++	ret = rtl826x_probe_with_patch(phydev,
++				       sub_id == RTL8261D_SUB_ID ? NULL :
++				       rtl8261c_phy_patch_db_init);
+ 	if (ret < 0)
+ 		return ret;
