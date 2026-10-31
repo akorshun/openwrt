@@ -170,7 +170,7 @@ Signed-off-by: Andrey Korshunov <razor1702@gmail.com>
 +bootled_rec=status:blue
 +boot_ubi=run ubi_prepare ; run boot_production ; run boot_recovery ; run boot_tftp_forever
 +boot_production=led $bootled_pwr on ; run ubi_read_production && bootm $loadaddr#$bootconf ; led $bootled_pwr off
-+boot_recovery=led $bootled_rec on ; run ubi_read_recovery ; bootm $initaddr#$bootconf ; led $bootled_rec off
++boot_recovery=led $bootled_rec on ; run ubi_read_recovery && bootm $initaddr#$bootconf ; led $bootled_rec off
 +boot_tftp=tftpboot $initaddr $bootfile && bootm $initaddr#$bootconf
 +boot_tftp_forever=led $bootled_rec on ; while true ; do run boot_tftp ; sleep 1 ; done
 +boot_installer=tftpboot $initaddr $installfile && bootm $initaddr#$bootconf
