@@ -1,4 +1,4 @@
-RAMFS_COPY_BIN='fitblk fit_check_sign'
+RAMFS_COPY_BIN='fitblk fit_check_sign tr'
 
 REQUIRE_IMAGE_METADATA=1
 
@@ -37,10 +37,10 @@ gemtek_prepare_factory() {
 	mtd="/dev/mtd$mtd"
 
 	dsd="$(dd if="$mtd" bs=4096 skip=$((0x400000 / 4096)) count=1 2>/dev/null | tr -c ' -~' '\n')"
-	wan="$(echo "$dsd" | sed -n 's/^wan_mac=//p' | head -n 1)"
-	lan="$(echo "$dsd" | sed -n 's/^lan_mac=//p' | head -n 1)"
-	fan="$(echo "$dsd" | sed -n 's/^fan_id=//p' | head -n 1)"
-	serial="$(echo "$dsd" | sed -n 's/^serial_number=//p' | head -n 1)"
+	wan="$(echo "$dsd" | sed -n '/^wan_mac=/{s///p;q}')"
+	lan="$(echo "$dsd" | sed -n '/^lan_mac=/{s///p;q}')"
+	fan="$(echo "$dsd" | sed -n '/^fan_id=/{s///p;q}')"
+	serial="$(echo "$dsd" | sed -n '/^serial_number=/{s///p;q}')"
 
 	case "$serial" in
 	$prefix*) ;;
