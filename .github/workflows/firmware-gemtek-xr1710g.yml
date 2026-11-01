@@ -448,9 +448,12 @@ jobs:
             usual: `uci set system.@system[0].compat_version=1.0 && uci commit system`.
           * **Stock firmware**: over the serial console (115200 8N1), as for
             the W1700K - flash `*-chainload-uboot.itb` to `0x600000` from the
-            vendor U-Boot, then boot the UBI installer from
-            https://github.com/hurrian/w1700k-ubi-installer via the chainloader
-            TFTP menu. The full procedure is in the commit
+            vendor U-Boot, then erase the stock firmware behind it with
+            `flash erase 0x700000 0x1b700000`. The chainloader creates UBI in
+            the erased area and loads `*-initramfs-recovery.itb` via TFTP from
+            `192.168.1.254`;
+            sysupgrade from there, which builds the `factory` volume from
+            the vendor partition. The full procedure is in the commit
             "airoha: add support for Gemtek XR1710G" on this branch.
 
           ### Recovery with the reset button
