@@ -15,7 +15,7 @@ name: Build Gemtek XR1710G
 # its modules only fit the firmware of the same release.
 #
 # The Gemtek W1700K is built alongside: both boards share
-# an7581-gemtek_w1700k-common.dtsi, and the W1700K devicetree is compared with
+# an7581-gemtek-common.dtsi, and the W1700K devicetree is compared with
 # the one built from its DTS before the split, so a change to the shared parts
 # that alters the W1700K shows up here.
 #
@@ -56,7 +56,7 @@ concurrency:
 env:
   DEVICE: gemtek_xr1710g-ubi
   TARGET_DIR: bin/targets/airoha/an7581
-  DTS: an7581-xr1710g-ubi
+  DTS: an7581-gemtek_xr1710g-ubi
   UBOOT: an7581_gemtek_xr1710g
   W_DEVICE: gemtek_w1700k-ubi
   W_DTS: an7581-w1700k-ubi
@@ -285,7 +285,7 @@ jobs:
 
       - name: Compare the W1700K DTB with the one from before the common dtsi
         # Build the W1700K DTS from the parent of the commit that introduced
-        # an7581-gemtek_w1700k-common.dtsi with the kernel's own cpp flags and
+        # an7581-gemtek-common.dtsi with the kernel's own cpp flags and
         # dtc (with -@, as the kernel builds its DTBs with symbols), and
         # diff it against the DTB of this build. Only the changes made
         # on purpose in that commit are allowed: the wan_mac reference without
@@ -478,7 +478,7 @@ jobs:
           ### Gemtek W1700K
 
           The `*-gemtek_w1700k-ubi-*` files are the Gemtek W1700K built from the
-          same tree: both boards share `an7581-gemtek_w1700k-common.dtsi`. The
+          same tree: both boards share `an7581-gemtek-common.dtsi`. The
           W1700K devicetree was compared with the one built from its DTS before
           the split (`w1700k-dtb.diff`): only the `wan_mac` reference, the
           generic node names `wifi@0,0` / `partition@1be00000` and the order of
