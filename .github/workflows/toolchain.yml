@@ -11,6 +11,7 @@ on:
       - 'toolchain/**'
     branches-ignore:
       - master
+      - main-nokia-beacon-10
 
 permissions:
   contents: read
