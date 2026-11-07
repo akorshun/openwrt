@@ -415,6 +415,10 @@
 				regulator-max-microvolt = <5090000>;
 				regulator-allowed-modes =
 					<RT5190A_OPMODE_AUTO RT5190A_OPMODE_FPWM>;
+				/* DIAGNOSTIC: keep the converter in continuous PWM instead of
+				 * letting it pulse-skip at light load.
+				 */
+				regulator-initial-mode = <RT5190A_OPMODE_FPWM>;
 				regulator-boot-on;
 				regulator-always-on;
 			};
@@ -440,6 +444,10 @@
 				regulator-max-microvolt = <850000>;
 				regulator-allowed-modes =
 					<RT5190A_OPMODE_AUTO RT5190A_OPMODE_FPWM>;
+				/* DIAGNOSTIC: keep the converter in continuous PWM instead of
+				 * letting it pulse-skip at light load.
+				 */
+				regulator-initial-mode = <RT5190A_OPMODE_FPWM>;
 				regulator-boot-on;
 				regulator-always-on;
 			};

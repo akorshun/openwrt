@@ -500,6 +500,26 @@ jobs:
           files: artifacts/*
           prerelease: ${{ contains(github.ref_name, '-test') }}
           body: |
+            > **Diagnostic build, not a release.** It is r13 plus the RTL8261D fix,
+            > with one extra change: the two rt5190a rails that may run in either
+            > automatic or forced-PWM mode (buck1 at 5.09 V and buck4 at 0.85 V) are
+            > pinned to forced PWM, where the device tree previously selected no mode
+            > and left them pulse-skipping at light load.
+            >
+            > The question is whether the 10G WAN port still loses its link when a
+            > second Wi-Fi radio is brought up on top of a running one. Test it with
+            > the fan off:
+            >
+            > ```
+            > echo disabled > /sys/class/thermal/thermal_zone0/mode
+            > echo 0 > /sys/class/thermal/cooling_device0/cur_state
+            > cat /sys/class/net/wan/carrier_changes
+            > ```
+            >
+            > Bring up one radio, let it settle, then add a second. Forced PWM costs a
+            > little efficiency, so this is a diagnostic, not a setting to keep.
+            > Everything below describes the release this was built from.
+
             OpenWrt **25.12.5** build for the **GL.iNet Flint 4 (GL-BE14000)**, MediaTek
             MT7988A, eMMC, MT7996 Wi-Fi 7.
 
