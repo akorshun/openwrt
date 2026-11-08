@@ -20,6 +20,7 @@ on:
     branches-ignore:
       - master
       - main-nokia-beacon-10
+      - main-nokia-beacon-10-v2
   workflow_dispatch:
 
 permissions:
