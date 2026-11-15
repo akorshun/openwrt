@@ -67,7 +67,11 @@ env:
   W_DTS: an7581-w1700k-ubi
   W_UBOOT: an7581_gemtek_w1700k
   KMODS: ${{ (endsWith(github.ref_name, '-kmods') || inputs.kmods == 'true') && '1' || '' }}
-  AWG_PACKAGES: kmod-amneziawg amneziawg-tools luci-proto-amneziawg luci-i18n-amneziawg-ru
+  AWG_PACKAGES: kmod-amneziawg amneziawg-tools luci-proto-amneziawg
+  # Hidden in a full build (selected only through LUCI_LANG_ru, which would
+  # put Russian LuCI into the images), so it is packaged on its own after
+  # the firmware build.
+  AWG_I18N: luci-i18n-amneziawg-ru
 
 jobs:
   build:
@@ -436,6 +440,10 @@ jobs:
         # A kmods build skips "m" packages that fail (IGNORE_ERRORS), so a
         # missing AmneziaWG package is caught here, not by make.
         run: |
+          # The translation package: switched on for this one make call only.
+          make package/luci-proto-amneziawg/compile "CONFIG_PACKAGE_${AWG_I18N}=m" V=s \
+            > /tmp/awg-i18n.log 2>&1 \
+            || { tail -40 /tmp/awg-i18n.log; echo "::warning::${AWG_I18N} failed to build"; }
           APK=staging_dir/host/bin/apk
           VM=$(find build_dir/target-* -maxdepth 3 -name .vermagic | head -1 | xargs cat)
           KVER=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["linux_kernel"]["version"])' "${TARGET_DIR}/profiles.json")
@@ -459,6 +467,13 @@ jobs:
             fi
             cp "$a" artifacts/
           done
+          a=$(find bin -type f -name "${AWG_I18N}-[0-9]*.apk" | head -1)
+          if [ -n "$a" ]; then
+            echo "$(basename "$a")"
+            cp "$a" artifacts/
+          else
+            echo "::warning::${AWG_I18N} was not built"
+          fi
           [ "$fail" = 0 ] || exit 1
           echo "AWG_VERMAGIC=$VM" >> "$GITHUB_ENV"
 
