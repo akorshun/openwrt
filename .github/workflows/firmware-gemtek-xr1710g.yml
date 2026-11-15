@@ -14,6 +14,11 @@ name: Build Gemtek XR1710G
 # kernel config, and so the vermagic, of such a build differs from a plain one:
 # its modules only fit the firmware of the same release.
 #
+# Every build also makes the AmneziaWG packages (kmod-amneziawg,
+# amneziawg-tools, luci-proto-amneziawg, luci-i18n-amneziawg-ru) from
+# akorshun/awg-openwrt as "m" packages and attaches them to the release.
+# They are not in the images; the kmod fits only this release's kernel.
+#
 # The Gemtek W1700K is built alongside: both boards share
 # an7581-gemtek-common.dtsi, and the W1700K devicetree is compared with
 # the one built from its DTS before the split, so a change to the shared parts
@@ -62,6 +67,7 @@ env:
   W_DTS: an7581-w1700k-ubi
   W_UBOOT: an7581_gemtek_w1700k
   KMODS: ${{ (endsWith(github.ref_name, '-kmods') || inputs.kmods == 'true') && '1' || '' }}
+  AWG_PACKAGES: kmod-amneziawg amneziawg-tools luci-proto-amneziawg luci-i18n-amneziawg-ru
 
 jobs:
   build:
@@ -157,6 +163,17 @@ jobs:
           done
           ./scripts/feeds install -a
 
+      - name: Add the AmneziaWG packages
+        run: |
+          git clone --depth 1 https://github.com/akorshun/awg-openwrt.git /tmp/awg
+          for p in kmod-amneziawg amneziawg-tools luci-proto-amneziawg; do
+            [ -f "/tmp/awg/$p/Makefile" ] || { echo "::error::$p not found in awg-openwrt"; exit 1; }
+            rm -rf "package/$p"
+            cp -r "/tmp/awg/$p" package/
+          done
+          echo "AWG_COMMIT=$(git -C /tmp/awg rev-parse HEAD)" >> "$GITHUB_ENV"
+          git -C /tmp/awg log -1 --oneline
+
       - name: Configure build (XR1710G and W1700K)
         run: |
           {
@@ -169,6 +186,8 @@ jobs:
             echo 'CONFIG_PACKAGE_luci=y'
             echo 'CONFIG_BUILD_LOG=y'
             if [ -n "$KMODS" ]; then echo 'CONFIG_ALL_KMODS=y'; fi
+            # Built as packages, not part of the images.
+            for p in $AWG_PACKAGES; do echo "CONFIG_PACKAGE_$p=m"; done
           } > .config
           make defconfig
 
@@ -196,6 +215,10 @@ jobs:
                    airoha-en7581-mt7996-npu-firmware kmod-hwmon-nct7802 fitblk; do
             grep -qE "^CONFIG_PACKAGE_${p}=[ym]" .config \
               || { echo "::error::${p} is not selected"; fail=1; }
+          done
+          for p in $AWG_PACKAGES; do
+            grep -qx "CONFIG_PACKAGE_${p}=m" .config \
+              || { echo "::error::${p} is not selected as a package"; fail=1; }
           done
           if [ -n "$KMODS" ]; then
             grep -qx 'CONFIG_ALL_KMODS=y' .config \
@@ -408,6 +431,37 @@ jobs:
           echo "VERMAGIC=$(find build_dir/target-* -maxdepth 3 -name .vermagic | head -1 | xargs cat)" >> "$GITHUB_ENV"
           ls -lh artifacts/
 
+      - name: Collect the AmneziaWG packages
+        if: success()
+        # A kmods build skips "m" packages that fail (IGNORE_ERRORS), so a
+        # missing AmneziaWG package is caught here, not by make.
+        run: |
+          APK=staging_dir/host/bin/apk
+          VM=$(find build_dir/target-* -maxdepth 3 -name .vermagic | head -1 | xargs cat)
+          KVER=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["linux_kernel"]["version"])' "${TARGET_DIR}/profiles.json")
+          echo "kernel $KVER, vermagic $VM"
+          fail=0
+          for p in $AWG_PACKAGES; do
+            a=$(find bin -type f -name "$p-[0-9]*.apk" | head -1)
+            if [ -z "$a" ]; then
+              echo "::error::$p was not built"
+              fail=1
+              continue
+            fi
+            echo "$(basename "$a")"
+            if [ "$p" = kmod-amneziawg ]; then
+              dep=$("$APK" adbdump "$a" 2>/dev/null | grep -oE 'kernel=[0-9.]+~[0-9a-f]{32}-r[0-9]+' | head -1)
+              echo "  depends on ${dep:-nothing}"
+              case "$dep" in
+                "kernel=$KVER~$VM-"*) ;;
+                *) echo "::error::kmod-amneziawg depends on '$dep', expected $KVER~$VM"; fail=1 ;;
+              esac
+            fi
+            cp "$a" artifacts/
+          done
+          [ "$fail" = 0 ] || exit 1
+          echo "AWG_VERMAGIC=$VM" >> "$GITHUB_ENV"
+
       - name: Upload firmware artifacts
         if: success()
         uses: actions/upload-artifact@v4
@@ -491,6 +545,21 @@ jobs:
           * `*-initramfs-recovery.itb` - RAM-only image for the chainloader TFTP menu
           * `*-chainload-uboot.itb` - the U-Boot chainloader for the `chainloader` partition
           * `profiles.json`, `sha256sums`, `build.config` - build metadata
+          EOF
+          cat >> release-body.md <<EOF
+
+          ### AmneziaWG
+
+          \`kmod-amneziawg\`, \`amneziawg-tools\`, \`luci-proto-amneziawg\` and
+          \`luci-i18n-amneziawg-ru\` (\`*.apk\` here) are built from
+          [akorshun/awg-openwrt@${AWG_COMMIT:0:10}](https://github.com/akorshun/awg-openwrt/commit/${AWG_COMMIT})
+          in this same build. The kmod depends on vermagic \`${AWG_VERMAGIC}\`
+          and only installs on the firmware **of this release**. With the four
+          files copied to \`/tmp/awg\` on the router:
+
+          \`\`\`sh
+          apk add --allow-untrusted /tmp/awg/*.apk
+          \`\`\`
           EOF
           if [ -n "$KMODS" ]; then
             cat >> release-body.md <<EOF
