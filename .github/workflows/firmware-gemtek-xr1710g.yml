@@ -460,6 +460,35 @@ jobs:
             cp "$a" artifacts/
           done
           [ "$fail" = 0 ] || exit 1
+
+          # The kmods kmod-amneziawg needs (kmod-udptunnel4/6, ...) are not in
+          # the firmware, and the official kmods feed does not fit this
+          # kernel: ship the ones this build made next to it, following
+          # dependencies. Userspace dependencies (ip, resolveip) come from
+          # the package feeds.
+          deps() {
+            "$APK" adbdump "$1" 2>/dev/null | awk '
+              /^  depends:/ { d = 1; next }
+              d && /^    - / { sub(/^    - /, ""); sub(/[<>=~].*/, ""); print; next }
+              d { exit }'
+          }
+          queue=$(deps "$(find bin -type f -name 'kmod-amneziawg-[0-9]*.apk' | head -1)")
+          seen=" "
+          while [ -n "$queue" ]; do
+            set -- $queue; d=$1; shift; queue="$*"
+            case "$d" in kmod-*) ;; *) continue ;; esac
+            case "$seen" in *" $d "*) continue ;; esac
+            seen="$seen$d "
+            a=$(find bin -type f -name "$d-[0-9]*.apk" | head -1)
+            if [ -z "$a" ]; then
+              # built into the kernel or part of the image
+              echo "  $d: no package in this build"
+              continue
+            fi
+            echo "  $d: $(basename "$a")"
+            cp "$a" artifacts/
+            queue="$queue $(deps "$a")"
+          done
           echo "AWG_VERMAGIC=$VM" >> "$GITHUB_ENV"
 
       - name: Upload firmware artifacts
@@ -554,12 +583,22 @@ jobs:
           (\`*.apk\` here) are built from
           [akorshun/awg-openwrt@${AWG_COMMIT:0:10}](https://github.com/akorshun/awg-openwrt/commit/${AWG_COMMIT})
           in this same build. The kmod depends on vermagic \`${AWG_VERMAGIC}\`
-          and only installs on the firmware **of this release**. With the three
-          files copied to \`/tmp/awg\` on the router:
+          and only installs on the firmware **of this release**; the kernel
+          modules it needs (\`kmod-udptunnel4\`, \`kmod-udptunnel6\`) are
+          attached as well, because the official kmods feed does not fit this
+          kernel. With all \`*.apk\` files of this release copied to \`/tmp/awg\`
+          on the router, and the router online (\`ip\` and \`resolveip\` come
+          from the package feeds):
 
           \`\`\`sh
+          apk update
           apk add --allow-untrusted /tmp/awg/*.apk
           \`\`\`
+
+          Offline, also copy \`ip-tiny\` and \`resolveip\` from
+          https://downloads.openwrt.org/snapshots/packages/aarch64_cortex-a53/base/
+          to \`/tmp/awg\` first. The module loads when an AmneziaWG interface
+          comes up.
           EOF
           if [ -n "$KMODS" ]; then
             cat >> release-body.md <<EOF
