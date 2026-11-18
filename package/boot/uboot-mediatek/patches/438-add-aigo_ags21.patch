@@ -158,11 +158,10 @@
 +			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
 +		};
 +
-+		button-mesh {
-+			label = "mesh";
-+			linux,code = <BTN_9>;
-+			linux,input-type = <EV_SW>;
-+			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
++		button-wps {
++			label = "wps";
++			linux,code = <KEY_WPS_BUTTON>;
++			gpios = <&pio 0 GPIO_ACTIVE_HIGH>;
 +		};
 +	};
 +
@@ -170,7 +169,7 @@
 +		compatible = "gpio-leds";
 +
 +		led-0 {
-+			label = "blue:status";
++			label = "green:status";
 +			gpios = <&pio 4 GPIO_ACTIVE_LOW>;
 +		};
 +
@@ -183,12 +182,7 @@
 +			label = "green:wan";
 +			gpios = <&pio 29 GPIO_ACTIVE_LOW>;
 +		};
-+
-+		led-3 {
-+			label = "white:wlan";
-+			gpios = <&pio 30 GPIO_ACTIVE_LOW>;
-+		};
-+	};
+++	};
 +};
 +
 +&eth {
@@ -284,7 +278,7 @@
 +bootfile_fip=openwrt-mediatek-filogic-aigo_ags21-emmc-bl31-uboot.fip
 +bootfile_upg=openwrt-mediatek-filogic-aigo_ags21-squashfs-sysupgrade.itb
 +bootled_pwr=red:status
-+bootled_rec=blue:status
++bootled_rec=green:status
 +bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
 +bootmenu_default=0
 +bootmenu_delay=0

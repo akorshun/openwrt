@@ -14,8 +14,8 @@
 	aliases {
 		led-boot = &red_led;
 		led-failsafe = &red_led;
-		led-running = &blue_led;
-		led-upgrade = &blue_led;
+		led-running = &green_led;
+		led-upgrade = &green_led;
 		serial0 = &uart0;
 		label-mac-device = &gmac1;
 	};
@@ -49,20 +49,19 @@
 			gpios = <&pio 1 GPIO_ACTIVE_LOW>;
 		};
 
-		button-mesh {
-			label = "mesh";
-			linux,code = <BTN_9>;
-			linux,input-type = <EV_SW>;
-			gpios = <&pio 0 GPIO_ACTIVE_LOW>;
+		button-wps {
+			label = "wps";
+			linux,code = <KEY_WPS_BUTTON>;
+			gpios = <&pio 0 GPIO_ACTIVE_HIGH>;
 		};
 	};
 
 	gpio-leds {
 		compatible = "gpio-leds";
 
-		blue_led: led-0 {
+		green_led: led-0 {
 			function = LED_FUNCTION_STATUS;
-			color = <LED_COLOR_ID_BLUE>;
+			color = <LED_COLOR_ID_GREEN>;
 			gpios = <&pio 4 GPIO_ACTIVE_LOW>;
 		};
 
@@ -76,12 +75,6 @@
 			function = LED_FUNCTION_WAN;
 			color = <LED_COLOR_ID_GREEN>;
 			gpios = <&pio 29 GPIO_ACTIVE_LOW>;
-		};
-
-		led-3 {
-			function = LED_FUNCTION_WLAN;
-			color = <LED_COLOR_ID_WHITE>;
-			gpios = <&pio 30 GPIO_ACTIVE_LOW>;
 		};
 	};
 };
@@ -248,8 +241,19 @@
 	status = "okay";
 };
 
+&pio {
+	wifi_led_pins: wifi-led-pins {
+		mux {
+			function = "led";
+			groups = "wf2g_led0", "wf5g_led0";
+		};
+	};
+};
+
 &wifi {
 	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&wifi_led_pins>;
 	nvmem-cells = <&eeprom_factory_0>;
 	nvmem-cell-names = "eeprom";
 
