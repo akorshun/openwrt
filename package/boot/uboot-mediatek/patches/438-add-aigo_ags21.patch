@@ -182,7 +182,7 @@
 +			label = "green:wan";
 +			gpios = <&pio 29 GPIO_ACTIVE_LOW>;
 +		};
-++	};
++	};
 +};
 +
 +&eth {
