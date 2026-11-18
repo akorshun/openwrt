@@ -12,7 +12,6 @@ airpi,ap3000m)
 	;;
 aigo,ags21)
 	ucidef_set_led_netdev "wan" "WAN" "green:wan" "eth1"
-	ucidef_set_led_netdev "wlan" "WLAN" "white:wlan" "phy1-ap0"
 	;;
 abt,asr3000)
 	ucidef_set_led_netdev "wan" "WAN" "green:wan" "eth1"
