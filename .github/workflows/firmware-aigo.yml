@@ -1,14 +1,24 @@
 name: Build Aigo AGS21
-# Builds firmware for the Aigo AGS21 (MT7981B, eMMC, mediatek/filogic).
+# Builds firmware for the Aigo AGS21 (MediaTek MT7981B, eMMC) from the
+# openwrt-25.12-aigo-ags21 branch, based on the OpenWrt v25.12.6 release.
 #
 # Runs only on tag pushes (or manual dispatch) - never on ordinary commits
-# or pushes to the branch. Every tag run publishes its images as a GitHub
-# release.
+# or pushes to the branch. Every run publishes its images as a GitHub
+# release. The tag pattern is deliberately not 'v*' to avoid racing the
+# stock github-release.yml inherited from upstream.
 #
-# The tag pattern is deliberately not 'v*': the stock github-release.yml
-# inherited from upstream fires on 'v*' and would race this workflow for the
-# same release. Cut a release with e.g. `git tag aigo-ags21-r1 && git push
-# origin aigo-ags21-r1`.
+# The build config is seeded from the official 25.12.6 buildbot config
+# for mediatek/filogic (derived mechanically from
+# https://downloads.openwrt.org/releases/25.12.6/targets/mediatek/filogic/config.buildinfo,
+# kept in .github/workflows/config/aigo-ags21-25126.config) so that the
+# kernel config - and therefore the module ABI and the vermagic derived
+# from it - matches the official 25.12.6 build. This branch adds no
+# kernel modules of its own, so the computed vermagic must equal the
+# published one; it is asserted after the kernel build, never forced.
+#
+# target/linux/mediatek/filogic/base-files carries a distfeeds.list with
+# the official kmods feed for that exact kernel, so official kmod-*
+# packages install on the result. Both are asserted below.
 
 on:
   workflow_dispatch:
@@ -19,8 +29,8 @@ on:
         default: "false"
         type: choice
         options:
-          - "false"
           - "true"
+          - "false"
   push:
     tags:
       - 'aigo-ags21-*'
@@ -28,9 +38,10 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  EXPECTED_KERNEL: 6.12.112
+  EXPECTED_RELEASE: 1
+  EXPECTED_VERMAGIC: f0a7348f9cb959e1bf4d0447669b031e
 
 jobs:
   build:
@@ -42,8 +53,11 @@ jobs:
       - name: Maximize build space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+            /usr/local/.ghcup /opt/hostedtoolcache /usr/share/swift || true
           sudo docker image prune --all --force || true
+          sudo apt-get clean || true
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile /swapfile || true
           df -h
 
       - name: Checkout
@@ -64,26 +78,47 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Configure build (Aigo AGS21 only)
+      - name: Configure build (Aigo AGS21, official kernel config)
         run: |
-          rm -f .config
-          cat > .config <<'EOF'
-          CONFIG_TARGET_mediatek=y
-          CONFIG_TARGET_mediatek_filogic=y
-          CONFIG_TARGET_mediatek_filogic_DEVICE_aigo_ags21=y
-          CONFIG_ALL_KMODS=n
-          CONFIG_ALL=n
-          CONFIG_AUTOREMOVE=n
-          CONFIG_LOCALMIRROR=""
-          # LuCI web UI (matches official release defaults)
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-ssl=y
-          EOF
+          cp .github/workflows/config/aigo-ags21-25126.config .config
           make defconfig
-          echo "----- Selected target -----"
+
+          echo "----- Selected target/device -----"
           grep -E '^CONFIG_TARGET_(mediatek|BOARD|ARCH)' .config | head -20
-          echo "----- Selected device -----"
           grep -E '^CONFIG_TARGET.*aigo' .config
+
+          # `make defconfig` is free to drop anything it considers
+          # unreachable, so check the seed survived before spending hours
+          # on a build whose kmods would not match the official feed.
+          echo "----- Kernel-ABI-relevant options -----"
+          fail=0
+          grep -qx 'CONFIG_ALL_KMODS=y' .config || { echo "::error::CONFIG_ALL_KMODS lost"; fail=1; }
+          grep -qx 'CONFIG_COLLECT_KERNEL_DEBUG=y' .config || { echo "::error::CONFIG_COLLECT_KERNEL_DEBUG lost (selects KERNEL_DEBUG_INFO)"; fail=1; }
+          grep -qx 'CONFIG_TARGET_mediatek_filogic_DEVICE_aigo_ags21=y' .config || { echo "::error::device not selected"; fail=1; }
+          [ "$fail" = 0 ] || exit 1
+
+          # include/kernel-defaults.mk copies every CONFIG_KERNEL_* straight
+          # into the kernel config with the prefix stripped, so each one is
+          # part of the ABI the official kmods were built against.
+          # config.buildinfo is a diffconfig - anything it states explicitly
+          # is a deviation from the tree defaults we would otherwise share,
+          # so all of it has to be present here too. BUILD_USER/BUILD_DOMAIN
+          # only set the KBUILD banner, not kernel config symbols.
+          curl -fsSL --retry 3 -o /tmp/config.buildinfo \
+            "https://downloads.openwrt.org/releases/25.12.6/targets/mediatek/filogic/config.buildinfo"
+          { grep -E '^(# )?CONFIG_KERNEL_' /tmp/config.buildinfo \
+            | grep -vE 'CONFIG_KERNEL_BUILD_(USER|DOMAIN)' || true; } > /tmp/kernel-opts.want
+          echo "official CONFIG_KERNEL_* deviations:"
+          cat /tmp/kernel-opts.want
+          while IFS= read -r want; do
+            [ -n "$want" ] || continue
+            if ! grep -qxF "$want" .config; then
+              echo "::error::kernel option missing from our config: $want"
+              fail=1
+            fi
+          done < /tmp/kernel-opts.want
+          [ "$fail" = 0 ] || exit 1
+          echo "seed survived defconfig"
 
       - name: Download sources
         run: make download -j8
@@ -100,6 +135,48 @@ jobs:
             ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
             make toolchain/install -j1 V=s
 
+      - name: Build kernel
+        # Kernel first, so the vermagic assertion below does not wait for
+        # the rest of the build.
+        run: |
+          make target/linux/compile -j$(nproc) \
+            ${{ inputs.verbose == 'true' && 'V=s' || '' }} || \
+            make target/linux/compile -j1 V=s
+
+      - name: Assert vermagic matches the published 25.12.6 feed
+        # This is a check, not a force: this branch adds no kernel modules,
+        # so with the official-config seed the computed vermagic must equal
+        # the published one on its own. If it fails, the kernel config
+        # differs from the official build and official kmod-* packages were
+        # built against a different kernel ABI: diff the seed against the
+        # config.buildinfo URL above instead of papering over it.
+        run: |
+          echo "----- LINUX_VERSION / LINUX_RELEASE -----"
+          LV=$(make --no-print-directory val.LINUX_VERSION 2>/dev/null || true)
+          LR=$(make --no-print-directory val.LINUX_RELEASE 2>/dev/null || true)
+          echo "LINUX_VERSION: $LV"
+          echo "LINUX_RELEASE: $LR"
+          if [ "$LV" != "$EXPECTED_KERNEL" ] || [ "$LR" != "$EXPECTED_RELEASE" ]; then
+            echo "::error::kernel version is $LV-$LR, expected $EXPECTED_KERNEL-$EXPECTED_RELEASE"
+            exit 1
+          fi
+          VM=$(find build_dir -path '*linux-mediatek_filogic*' -name .vermagic | head -1)
+          if [ -z "$VM" ] || [ ! -s "$VM" ]; then
+            echo "::error::.vermagic not found - kernel build incomplete?"
+            exit 1
+          fi
+          ACTUAL=$(cat "$VM")
+          echo "computed vermagic: $ACTUAL"
+          echo "expected vermagic: $EXPECTED_VERMAGIC"
+          if [ "$ACTUAL" != "$EXPECTED_VERMAGIC" ]; then
+            echo "::error::vermagic is $ACTUAL, expected $EXPECTED_VERMAGIC"
+            echo "The kernel config differs from the official 25.12.6 buildbot"
+            echo "config; official kmod-* packages must not be advertised to"
+            echo "this image."
+            exit 1
+          fi
+          echo "vermagic OK"
+
       - name: Build firmware
         run: |
           make -j$(nproc) \
@@ -114,6 +191,25 @@ jobs:
           echo "----- disk usage -----"
           df -h
 
+      - name: Verify the shipped kmods feed line
+        run: |
+          echo "----- generated distfeeds.list -----"
+          DF=$(find build_dir -path '*/etc/apk/repositories.d/distfeeds.list' 2>/dev/null | head -1)
+          if [ -z "$DF" ]; then
+            echo "::error::generated distfeeds.list not found"
+            exit 1
+          fi
+          cat "$DF"
+
+          # target/linux/mediatek/filogic/base-files carries this line with
+          # a hardcoded kernel version and vermagic; keep it honest.
+          WANT="/targets/mediatek/filogic/kmods/${EXPECTED_KERNEL}-${EXPECTED_RELEASE}-${EXPECTED_VERMAGIC}/packages.adb"
+          if ! grep -qF "$WANT" "$DF"; then
+            echo "::error::distfeeds.list does not carry $WANT"
+            exit 1
+          fi
+          echo "kmods feed line OK"
+
       - name: Collect artifacts
         if: success()
         run: |
@@ -122,6 +218,12 @@ jobs:
           cp -v bin/targets/mediatek/filogic/sha256sums artifacts/ 2>/dev/null || true
           cp -v bin/targets/mediatek/filogic/profiles.json artifacts/ 2>/dev/null || true
           cp -v .config artifacts/build.config 2>/dev/null || true
+          # CONFIG_ALL_KMODS=y makes this build produce the whole kmods set
+          # for this kernel; ship it alongside the firmware for offline use.
+          if compgen -G 'bin/targets/mediatek/filogic/packages/kmod-*.apk' >/dev/null; then
+            tar -czf artifacts/kmods-mediatek-filogic-${EXPECTED_KERNEL}-${EXPECTED_VERMAGIC}.tar.gz \
+              -C bin/targets/mediatek/filogic packages/kmod-*.apk
+          fi
           ls -lh artifacts/
 
       - name: Upload firmware artifacts
