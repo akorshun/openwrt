@@ -241,19 +241,8 @@
 	status = "okay";
 };
 
-&pio {
-	wifi_led_pins: wifi-led-pins {
-		mux {
-			function = "led";
-			groups = "wf2g_led0", "wf5g_led0";
-		};
-	};
-};
-
 &wifi {
 	status = "okay";
-	pinctrl-names = "default";
-	pinctrl-0 = <&wifi_led_pins>;
 	nvmem-cells = <&eeprom_factory_0>;
 	nvmem-cell-names = "eeprom";
 
