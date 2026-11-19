@@ -19,6 +19,7 @@ on:
       - 'target/linux/**'
     branches-ignore:
       - master
+      - '*-aigo-ags21'
   workflow_dispatch:
 
 permissions:
