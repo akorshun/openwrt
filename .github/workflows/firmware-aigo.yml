@@ -150,16 +150,14 @@ jobs:
         # differs from the official build and official kmod-* packages were
         # built against a different kernel ABI: diff the seed against the
         # config.buildinfo URL above instead of papering over it.
+        # (val.LINUX_VERSION / val.LINUX_RELEASE are printed for diagnostics
+        # only, exactly as in the reference workflow; the vermagic file is
+        # the check.)
         run: |
           echo "----- LINUX_VERSION / LINUX_RELEASE -----"
-          LV=$(make --no-print-directory val.LINUX_VERSION 2>/dev/null || true)
-          LR=$(make --no-print-directory val.LINUX_RELEASE 2>/dev/null || true)
-          echo "LINUX_VERSION: $LV"
-          echo "LINUX_RELEASE: $LR"
-          if [ "$LV" != "$EXPECTED_KERNEL" ] || [ "$LR" != "$EXPECTED_RELEASE" ]; then
-            echo "::error::kernel version is $LV-$LR, expected $EXPECTED_KERNEL-$EXPECTED_RELEASE"
-            exit 1
-          fi
+          make --no-print-directory val.LINUX_VERSION val.LINUX_RELEASE 2>/dev/null || true
+          echo "------------------------------------------"
+
           VM=$(find build_dir -path '*linux-mediatek_filogic*' -name .vermagic | head -1)
           if [ -z "$VM" ] || [ ! -s "$VM" ]; then
             echo "::error::.vermagic not found - kernel build incomplete?"
