@@ -331,9 +331,15 @@ jobs:
           if [ -n "$DF" ]; then cp -v "$DF" artifacts/distfeeds.list; fi
           # CONFIG_ALL_KMODS=y makes this build produce the whole kmods set
           # for this kernel; ship it alongside the firmware for offline use.
+          # The glob must be expanded in the directory tar will chdir into:
+          # `tar -C dir packages/kmod-*.apk` expands the pattern in the
+          # current directory instead, finds nothing, and then fails with
+          # "Cannot stat: packages/kmod-*.apk" (that is what broke r5's
+          # Collect artifacts step after every check had passed).
           if compgen -G 'bin/targets/mediatek/filogic/packages/kmod-*.apk' >/dev/null; then
-            tar -czf artifacts/kmods-mediatek-filogic-${EXPECTED_KERNEL}-${EXPECTED_VERMAGIC}.tar.gz \
-              -C bin/targets/mediatek/filogic packages/kmod-*.apk
+            ( cd bin/targets/mediatek/filogic && \
+              tar -czf "$GITHUB_WORKSPACE/artifacts/kmods-mediatek-filogic-${EXPECTED_KERNEL}-${EXPECTED_VERMAGIC}.tar.gz" \
+                packages/kmod-*.apk )
           fi
           ls -lh artifacts/
 
