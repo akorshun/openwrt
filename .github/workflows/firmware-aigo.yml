@@ -18,7 +18,20 @@ name: Build Aigo AGS21
 #
 # target/linux/mediatek/filogic/base-files carries a distfeeds.list with
 # the official kmods feed for that exact kernel, so official kmod-*
-# packages install on the result. Both are asserted below.
+# packages install on the result. Both are asserted, in three places:
+#   - early: the values baked into the template and above must name a
+#     kernel directory that really exists in the published feed, so a
+#     release bump that forgets one of them fails in minutes, not after
+#     the build;
+#   - after the kernel build: include/kernel-defaults.mk's .vermagic must
+#     equal the published value, and the feed for that exact value must
+#     exist on downloads.openwrt.org;
+#   - after the image build: the distfeeds.list that actually lands in the
+#     rootfs must carry the resolved (not %U/%S) official kmods URL.
+# That last check must look at the staged rootfs, not at just any copy of
+# the file: target/imagebuilder/Makefile copies the whole target/linux
+# tree (template included) into build_dir/target-*/imagebuilder-*, and
+# that copy deliberately keeps the unsubstituted placeholders.
 
 on:
   workflow_dispatch:
@@ -42,6 +55,10 @@ env:
   EXPECTED_KERNEL: 6.12.112
   EXPECTED_RELEASE: 1
   EXPECTED_VERMAGIC: f0a7348f9cb959e1bf4d0447669b031e
+  # Official package repository the image advertises: CONFIG_VERSION_REPO in
+  # the seed config, i.e. what VERSION_SED_SCRIPT substitutes for %U.
+  EXPECTED_REPO: https://downloads.openwrt.org/releases/25.12.6
+  EXPECTED_TARGET: mediatek/filogic
 
 jobs:
   build:
@@ -120,6 +137,56 @@ jobs:
           [ "$fail" = 0 ] || exit 1
           echo "seed survived defconfig"
 
+      - name: Assert the advertised kmods feed is the published one
+        # Everything here is cheap and runs before the multi-hour build.
+        # The single source of truth is the env block above; the tracked
+        # distfeeds.list template and CONFIG_VERSION_REPO (which becomes %U)
+        # must agree with it, and the feed the image is going to advertise
+        # must really exist on downloads.openwrt.org. A release bump that
+        # misses one of the three fails here in minutes - not after hours of
+        # building an image whose distfeeds would 404.
+        run: |
+          fail=0
+
+          KVER="${EXPECTED_KERNEL}-${EXPECTED_RELEASE}-${EXPECTED_VERMAGIC}"
+          KMODS_URL="$EXPECTED_REPO/targets/$EXPECTED_TARGET/kmods/$KVER"
+
+          echo "----- CONFIG_VERSION_REPO (%U) -----"
+          grep -E '^CONFIG_VERSION_REPO=' .config || true
+          grep -qx "CONFIG_VERSION_REPO=\"$EXPECTED_REPO\"" .config \
+            || { echo "::error::CONFIG_VERSION_REPO is not $EXPECTED_REPO"; fail=1; }
+
+          # The template must stay a template: %U and %S are resolved by
+          # VERSION_SED_SCRIPT when base-files is installed.
+          DF_SRC=target/linux/mediatek/filogic/base-files/etc/apk/repositories.d/distfeeds.list
+          WANT_SRC="%U/targets/%S/kmods/${KVER}/packages.adb"
+          echo "----- $DF_SRC -----"
+          cat "$DF_SRC" 2>/dev/null || true
+          if [ "$(cat "$DF_SRC" 2>/dev/null)" != "$WANT_SRC" ]; then
+            echo "::error::$DF_SRC is not the expected kmods feed template"
+            echo "expected: $WANT_SRC"
+            fail=1
+          fi
+
+          echo "----- published kmods feeds for $EXPECTED_TARGET -----"
+          # Fetch to a file first: `curl | grep -q` is unreliable under the
+          # runner's `bash -eo pipefail` (grep -q closes the pipe early and
+          # curl then reports a write error, failing a successful match).
+          if ! curl -fsS --retry 3 -o /tmp/kmods-index.html \
+               "$EXPECTED_REPO/targets/$EXPECTED_TARGET/kmods/"; then
+            echo "::error::cannot fetch $EXPECTED_REPO/targets/$EXPECTED_TARGET/kmods/"
+            fail=1
+          else
+            grep -oE '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-[0-9a-f]{32}/' /tmp/kmods-index.html || true
+            if ! grep -qF "$KVER/" /tmp/kmods-index.html; then
+              echo "::error::no published kmods feed at $KMODS_URL"
+              fail=1
+            fi
+          fi
+
+          [ "$fail" = 0 ] || exit 1
+          echo "advertised kmods feed is the published one: $KMODS_URL"
+
       - name: Download sources
         run: make download -j8
 
@@ -158,11 +225,17 @@ jobs:
           make --no-print-directory val.LINUX_VERSION val.LINUX_RELEASE 2>/dev/null || true
           echo "------------------------------------------"
 
-          VM=$(find build_dir -path '*linux-mediatek_filogic*' -name .vermagic | head -1)
+          # The real kernel directory, not the imagebuilder's copy of the
+          # kernel tree under build_dir/target-*/imagebuilder-*.
+          VM=$(ls -1 build_dir/target-*/linux-mediatek_filogic/linux-*/.vermagic 2>/dev/null | head -1)
+          if [ -z "$VM" ] || [ ! -s "$VM" ]; then
+            VM=$(find build_dir -path '*linux-mediatek_filogic*' -name .vermagic 2>/dev/null | head -1)
+          fi
           if [ -z "$VM" ] || [ ! -s "$VM" ]; then
             echo "::error::.vermagic not found - kernel build incomplete?"
             exit 1
           fi
+          echo "vermagic file: $VM"
           ACTUAL=$(cat "$VM")
           echo "computed vermagic: $ACTUAL"
           echo "expected vermagic: $EXPECTED_VERMAGIC"
@@ -173,7 +246,17 @@ jobs:
             echo "this image."
             exit 1
           fi
-          echo "vermagic OK"
+
+          # The computed value is only "official" if the release actually
+          # published a kmods feed for it; do not trust the constant above.
+          KVER="${EXPECTED_KERNEL}-${EXPECTED_RELEASE}-${ACTUAL}"
+          echo "----- published kmods feed check -----"
+          curl -fsS --retry 3 -o /tmp/kmods-index.html \
+            "$EXPECTED_REPO/targets/$EXPECTED_TARGET/kmods/" \
+            || { echo "::error::cannot fetch the published kmods index"; exit 1; }
+          grep -qF "$KVER/" /tmp/kmods-index.html \
+            || { echo "::error::$EXPECTED_REPO/targets/$EXPECTED_TARGET/kmods/$KVER does not exist"; exit 1; }
+          echo "vermagic OK and published: $KVER"
 
       - name: Build firmware
         run: |
@@ -190,23 +273,49 @@ jobs:
           df -h
 
       - name: Verify the shipped kmods feed line
+        # Only the generated rootfs is shipped. Its distfeeds.list is built
+        # from the base-files package, where Package/base-files/install
+        # appends the standard feed entries to the platform template and
+        # then resolves %U/%S via VERSION_SED_SCRIPT.
+        #
+        # Do not look the file up with
+        #   find build_dir -path '*/etc/apk/repositories.d/distfeeds.list'
+        # alone: target/imagebuilder/Makefile copies the whole
+        # target/linux/<board> tree, template included, into
+        # build_dir/target-*/imagebuilder-*/target/linux/..., and that copy
+        # still contains the literal %U/%S. It sorted before root-* and a
+        # bare `head -1` picked it, which failed this check on an otherwise
+        # good image.
         run: |
-          echo "----- generated distfeeds.list -----"
-          DF=$(find build_dir -path '*/etc/apk/repositories.d/distfeeds.list' 2>/dev/null | head -1)
-          if [ -z "$DF" ]; then
-            echo "::error::generated distfeeds.list not found"
-            exit 1
-          fi
-          cat "$DF"
+          CORE="$EXPECTED_REPO/targets/$EXPECTED_TARGET/packages/packages.adb"
+          KMODS="$EXPECTED_REPO/targets/$EXPECTED_TARGET/kmods/${EXPECTED_KERNEL}-${EXPECTED_RELEASE}-${EXPECTED_VERMAGIC}/packages.adb"
+          echo "expected core feed:  $CORE"
+          echo "expected kmods feed: $KMODS"
 
-          # target/linux/mediatek/filogic/base-files carries this line with
-          # a hardcoded kernel version and vermagic; keep it honest.
-          WANT="/targets/mediatek/filogic/kmods/${EXPECTED_KERNEL}-${EXPECTED_RELEASE}-${EXPECTED_VERMAGIC}/packages.adb"
-          if ! grep -qF "$WANT" "$DF"; then
-            echo "::error::distfeeds.list does not carry $WANT"
+          mapfile -t DFS < <(find build_dir -type f \
+            \( -path '*/root-mediatek/etc/apk/repositories.d/distfeeds.list' \
+               -o -path '*/target-dir-pkg=*/etc/apk/repositories.d/distfeeds.list' \) \
+            2>/dev/null | sort)
+          if [ "${#DFS[@]}" -eq 0 ]; then
+            echo "::error::no generated rootfs distfeeds.list found"
             exit 1
           fi
-          echo "kmods feed line OK"
+
+          fail=0
+          for df in "${DFS[@]}"; do
+            echo "----- $df -----"
+            cat "$df"
+            if grep -qE '%[A-Za-z]' "$df"; then
+              echo "::error::$df still contains unsubstituted % placeholders"
+              fail=1
+            fi
+            grep -qxF "$CORE" "$df" \
+              || { echo "::error::$df does not carry $CORE"; fail=1; }
+            grep -qxF "$KMODS" "$df" \
+              || { echo "::error::$df does not carry $KMODS"; fail=1; }
+          done
+          [ "$fail" = 0 ] || exit 1
+          echo "rootfs distfeeds.list OK (${#DFS[@]} file(s))"
 
       - name: Collect artifacts
         if: success()
@@ -216,6 +325,10 @@ jobs:
           cp -v bin/targets/mediatek/filogic/sha256sums artifacts/ 2>/dev/null || true
           cp -v bin/targets/mediatek/filogic/profiles.json artifacts/ 2>/dev/null || true
           cp -v .config artifacts/build.config 2>/dev/null || true
+          # The rootfs copy of distfeeds.list, so the release shows which
+          # feeds the image advertises without unpacking the squashfs.
+          DF=$(ls -1 build_dir/target-*/root-mediatek/etc/apk/repositories.d/distfeeds.list 2>/dev/null | head -1)
+          if [ -n "$DF" ]; then cp -v "$DF" artifacts/distfeeds.list; fi
           # CONFIG_ALL_KMODS=y makes this build produce the whole kmods set
           # for this kernel; ship it alongside the firmware for offline use.
           if compgen -G 'bin/targets/mediatek/filogic/packages/kmod-*.apk' >/dev/null; then
