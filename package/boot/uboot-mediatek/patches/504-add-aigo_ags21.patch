@@ -325,7 +325,7 @@ Signed-off-by: Andrey Korshunov <razor1702@gmail.com>
 +emmc_read_production=part start mmc 0 $part_default part_addr && part size mmc 0 $part_default part_size && run mmc_read_vol
 +emmc_read_recovery=part start mmc 0 $part_recovery part_addr && part size mmc 0 $part_recovery part_size && run mmc_read_vol
 +emmc_write_bl2=mmc partconf 0 1 1 1 && mmc erase 0x0 0x400 && mmc write $fileaddr 0x0 0x400 ; mmc partconf 0 1 1 0
-+emmc_write_fip=mmc erase 0x3400 0x2000 && mmc write $fileaddr 0x3400 0x2000 && mmc erase 0x2000 0x800
++emmc_write_fip=mmc erase 0x3400 0x2000 && mmc write $fileaddr 0x3400 0x2000 && mmc erase 0x2000 0x400
 +emmc_write_production=part start mmc 0 $part_default part_addr && part size mmc 0 $part_default part_size && run mmc_write_vol
 +emmc_write_recovery=part start mmc 0 $part_recovery part_addr && part size mmc 0 $part_recovery part_size && run mmc_write_vol
 +_init_env=setenv _init_env ; setenv _create_env ; saveenv ; saveenv
