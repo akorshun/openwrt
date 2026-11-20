@@ -112,6 +112,7 @@ platform_do_upgrade() {
 	case "$board" in
 	abt,asr3000|\
 	acer,predator-w6x-ubootmod|\
+	aigo,ags21|\
 	asus,zenwifi-bt8-ubootmod|\
 	bananapi,bpi-r3|\
 	bananapi,bpi-r3-mini|\
@@ -172,7 +173,6 @@ platform_do_upgrade() {
 	acer,predator-w6|\
 	acer,predator-w6d|\
 	acer,vero-w6m|\
-	aigo,ags21|\
 	airpi,ap3000m|\
 	arcadyan,mozart|\
 	glinet,gl-mt2500|\
@@ -355,6 +355,7 @@ platform_check_image() {
 	case "$board" in
 	abt,asr3000|\
 	acer,predator-w6x-ubootmod|\
+	aigo,ags21|\
 	asus,zenwifi-bt8-ubootmod|\
 	bananapi,bpi-r3|\
 	bananapi,bpi-r3-mini|\
@@ -431,6 +432,7 @@ platform_check_image() {
 
 platform_copy_config() {
 	case "$(board_name)" in
+	aigo,ags21|\
 	bananapi,bpi-r3|\
 	bananapi,bpi-r3-mini|\
 	bananapi,bpi-r4|\
@@ -447,7 +449,6 @@ platform_copy_config() {
 	acer,predator-w6|\
 	acer,predator-w6d|\
 	acer,vero-w6m|\
-	aigo,ags21|\
 	airpi,ap3000m|\
 	arcadyan,mozart|\
 	glinet,gl-mt2500|\
