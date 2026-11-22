@@ -276,7 +276,7 @@ Signed-off-by: Andrey Korshunov <razor1702@gmail.com>
 +};
 --- /dev/null
 +++ b/defenvs/aigo_ags21_env
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,68 @@
 +ipaddr=192.168.1.1
 +serverip=192.168.1.254
 +loadaddr=0x46000000
@@ -314,8 +314,8 @@ Signed-off-by: Andrey Korshunov <razor1702@gmail.com>
 +boot_tftp_forever=led $bootled_rec on ; while true ; do run boot_tftp_recovery ; sleep 1 ; done
 +boot_tftp_production=tftpboot $loadaddr $bootfile_upg && env exists replacevol && iminfo $loadaddr && run emmc_write_production ; if env exists noboot ; then else bootm $loadaddr#$bootconf ; fi
 +boot_tftp_recovery=tftpboot $loadaddr $bootfile && env exists replacevol && iminfo $loadaddr && run emmc_write_recovery ; if env exists noboot ; then else bootm $loadaddr#$bootconf ; fi
-+boot_tftp_write_fip=tftpboot $loadaddr $bootfile_fip && run emmc_write_fip
-+boot_tftp_write_bl2=tftpboot $loadaddr $bootfile_bl2 && run emmc_write_bl2
++boot_tftp_write_fip=setenv filesize && tftpboot $loadaddr $bootfile_fip && run emmc_write_fip
++boot_tftp_write_bl2=setenv filesize && tftpboot $loadaddr $bootfile_bl2 && run emmc_write_bl2
 +boot_tftp=tftpboot $loadaddr $bootfile && bootm $loadaddr#$bootconf
 +mmc_write_vol=imszb $loadaddr image_size && test 0x$image_size -le 0x$part_size && mmc erase 0x$part_addr 0x$image_size && mmc write $loadaddr 0x$part_addr 0x$image_size
 +mmc_read_vol=mmc read $loadaddr $part_addr 0x100 && imszb $loadaddr image_size && test 0x$image_size -le 0x$part_size && mmc read $loadaddr 0x$part_addr 0x$image_size && setexpr filesize $image_size * 0x200
@@ -324,8 +324,21 @@ Signed-off-by: Andrey Korshunov <razor1702@gmail.com>
 +reset_factory=eraseenv && reset
 +emmc_read_production=part start mmc 0 $part_default part_addr && part size mmc 0 $part_default part_size && run mmc_read_vol
 +emmc_read_recovery=part start mmc 0 $part_recovery part_addr && part size mmc 0 $part_recovery part_size && run mmc_read_vol
-+emmc_write_bl2=mmc partconf 0 1 1 1 && mmc erase 0x0 0x400 && mmc write $fileaddr 0x0 0x400 ; mmc partconf 0 1 1 0
-+emmc_write_fip=mmc erase 0x3400 0x2000 && mmc write $fileaddr 0x3400 0x2000 && mmc erase 0x2000 0x400
++mmc_prepare_write=if test 0x$filesize -gt 0 && test 0x$filesize -le $write_limit; then \
++	setexpr write_blocks $filesize + 0x1ff && \
++	setexpr write_blocks $write_blocks / 0x200 && \
++	setexpr pad_size $write_blocks * 0x200 && \
++	setexpr pad_size $pad_size - $filesize && \
++	setexpr pad_addr $fileaddr + $filesize && \
++	mw.b $pad_addr 0 $pad_size; \
++	else echo Invalid boot image size; false; fi
++emmc_write_bl2=setenv write_limit 0x80000 && run mmc_prepare_write && mmc dev 0 1 && \
++	if mmc erase 0x0 0x400 && mmc write $fileaddr 0x0 $write_blocks; then \
++		mmc dev 0 0 && mmc partconf 0 1 1 0; \
++	else mmc dev 0 0; false; fi
++emmc_write_fip=setenv write_limit 0x400000 && run mmc_prepare_write && mmc dev 0 0 && \
++	mmc erase 0x3400 0x2000 && mmc write $fileaddr 0x3400 $write_blocks && \
++	mmc erase 0x2000 0x400
 +emmc_write_production=part start mmc 0 $part_default part_addr && part size mmc 0 $part_default part_size && run mmc_write_vol
 +emmc_write_recovery=part start mmc 0 $part_recovery part_addr && part size mmc 0 $part_recovery part_size && run mmc_write_vol
 +_init_env=setenv _init_env ; setenv _create_env ; saveenv ; saveenv
