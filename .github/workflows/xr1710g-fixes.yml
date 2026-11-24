@@ -31,6 +31,11 @@ jobs:
             git libncurses-dev libssl-dev python3 rsync unzip zlib1g-dev file wget \
             xsltproc libelf-dev bc
 
+      - name: Install feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
       - name: Configure the target
         run: |
           echo 'CONFIG_TARGET_airoha=y' > .config
