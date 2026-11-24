@@ -1,0 +1,97 @@
+name: XR1710G fixes build
+
+on:
+  push:
+    branches:
+      - xr1710g-fixes-build
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: airoha/an7581 gemtek_xr1710g-ubi
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential clang flex bison g++ gawk gettext \
+            git libncurses-dev libssl-dev python3 rsync unzip zlib1g-dev file wget \
+            xsltproc libelf-dev bc
+
+      - name: Configure the target
+        run: |
+          echo 'CONFIG_TARGET_airoha=y' > .config
+          echo 'CONFIG_TARGET_airoha_an7581=y' >> .config
+          echo 'CONFIG_TARGET_MULTI_PROFILE=y' >> .config
+          echo 'CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_gemtek_xr1710g-ubi=y' >> .config
+          echo 'CONFIG_PACKAGE_luci=y' >> .config
+          make defconfig
+          if ! grep -q '^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_gemtek_xr1710g-ubi=y' .config; then
+            echo '::error::the XR1710G device was not selected'
+            grep -i gemtek .config || true
+            exit 1
+          fi
+          if ! grep -q '^CONFIG_PACKAGE_luci=y' .config; then
+            echo '::error::LuCI was not selected'
+            exit 1
+          fi
+
+      - name: Download sources
+        run: make -j8 download || true
+
+      - name: Build
+        run: |
+          make -j"$(nproc)" > build.log 2>&1 || {
+            echo '::error::the build failed'
+            tail -n 400 build.log
+            exit 1
+          }
+
+      - name: Check the built rootfs and images
+        run: |
+          rootfs=$(ls -d build_dir/target-*/root-airoha 2>/dev/null | head -n 1)
+          if [ -n "$rootfs" ]; then
+            grep -q 'incomplete EEPROM read' "$rootfs/lib/upgrade/platform.sh"
+            grep -q 'failed to build a complete image' "$rootfs/lib/upgrade/platform.sh"
+            grep -q 'NCT7802 not found' "$rootfs/etc/init.d/airoha_fan"
+            grep -q 'pwm1_auto_point4_pwm' "$rootfs/etc/init.d/airoha_fan"
+            test -f "$rootfs/etc/init.d/uhttpd"
+            test -f "$rootfs/usr/share/ucode/luci/uhttpd.uc"
+            echo "both fixes and LuCI are in $rootfs"
+          else
+            echo '::warning::root-airoha was not found, skipping the rootfs check'
+          fi
+          ls -l bin/targets/airoha/an7581/
+          ls bin/targets/airoha/an7581/*gemtek_xr1710g* > /dev/null
+          echo 'XR1710G images built'
+
+      - name: Upload images
+        uses: actions/upload-artifact@v4
+        with:
+          name: airoha-an7581-xr1710g
+          if-no-files-found: error
+          path: |
+            bin/targets/airoha/an7581/*.itb
+            bin/targets/airoha/an7581/*.bin
+            bin/targets/airoha/an7581/sha256sums
+            bin/targets/airoha/an7581/profiles.json
+
+      - name: Upload the build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
